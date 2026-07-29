@@ -1,23 +1,47 @@
+import { Route, Routes } from "react-router";
+import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AppLayout } from "./layouts/AppLayout";
+import { DashboardPage } from "./pages/DashboardPage";
+import { InvoiceMonthPage } from "./pages/InvoiceMonthPage";
+import { LoginPage } from "./pages/LoginPage";
+import { CardsPage } from "./pages/CardsPage";
+import { UsersPage } from "./pages/UsersPage";
+import { ChargesPage } from "./pages/ChargesPage";
+
 function App() {
   return (
-    <main className="flex min-h-screen items-center justify-center bg-slate-100">
-      <section className="rounded-2xl bg-white p-10 text-center shadow-lg">
-        <h1 className="text-3xl font-bold text-slate-900">
-          Controle Financeiro
-        </h1>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
 
-        <p className="mt-3 text-slate-600">
-          Projeto configurado com React, TypeScript e Tailwind.
-        </p>
+      <Route element={<ProtectedRoute />}>
+        <Route element={<AppLayout />}>
+          <Route index element={<DashboardPage />} />
 
-        <button
-          type="button"
-          className="mt-6 rounded-lg bg-blue-600 px-5 py-3 font-medium text-white hover:bg-blue-700"
-        >
-          Começar
-        </button>
-      </section>
-    </main>
+          <Route path="faturas/:year/:month" element={<InvoiceMonthPage />} />
+
+          <Route element={<ProtectedRoute adminOnly />}>
+            <Route path="cartoes" element={<CardsPage />} />
+
+            <Route path="contas" element={<ChargesPage />} />
+
+            <Route path="usuarios" element={<UsersPage />} />
+          </Route>
+        </Route>
+      </Route>
+
+      <Route
+        path="*"
+        element={
+          <main className="flex min-h-screen items-center justify-center bg-slate-100 p-6">
+            <section className="text-center">
+              <h1 className="text-5xl font-bold text-slate-900">404</h1>
+
+              <p className="mt-3 text-slate-600">Página não encontrada.</p>
+            </section>
+          </main>
+        }
+      />
+    </Routes>
   );
 }
 
