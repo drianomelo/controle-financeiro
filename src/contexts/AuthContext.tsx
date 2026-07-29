@@ -18,6 +18,8 @@ export type Profile = {
   username: string;
   role: "admin" | "common";
   active: boolean;
+  salary_cents: number;
+  avatar_path: string | null;
 };
 
 type LoginResult = {
@@ -85,7 +87,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const { data, error } = await supabase
         .from("profiles")
-        .select("id, name, username, role, active")
+        .select(
+          `
+            id,
+            name,
+            username,
+            role,
+            active,
+            salary_cents,
+            avatar_path
+          `,
+        )
         .eq("id", session.user.id)
         .single();
 

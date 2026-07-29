@@ -1,6 +1,17 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
+import {
+  type ChangeEvent,
+  type FormEvent,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
+import {
+  formatCurrencyFromCents,
+  formatMoneyInput,
+  moneyInputToNonNegativeCents,
+} from "../utils/currency";
 
 type UserProfile = {
   id: string;
@@ -8,34 +19,135 @@ type UserProfile = {
   username: string;
   role: "admin" | "common";
   active: boolean;
+  salary_cents: number;
+  avatar_path: string | null;
   created_at: string;
 };
 
 type UserForm = {
   name: string;
   role: "admin" | "common";
+  salary: string;
 };
 
 const emptyForm: UserForm = {
   name: "",
   role: "common",
+  salary: "",
 };
+
+const allowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
+
+const maximumImageSize = 5 * 1024 * 1024;
+
+function getInitials(name: string) {
+  return name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+}
+
+type AvatarProps = {
+  name: string;
+  imageUrl?: string | null;
+  large?: boolean;
+};
+
+function Avatar({ name, imageUrl, large = false }: AvatarProps) {
+  const sizeClass = large ? "h-24 w-24 text-2xl" : "h-12 w-12 text-sm";
+
+  if (imageUrl) {
+    return (
+      <img
+        src={imageUrl}
+        alt={`Foto de ${name}`}
+        className={`${sizeClass} shrink-0 rounded-full object-cover ring-2 ring-slate-100`}
+      />
+    );
+  }
+
+  return (
+    <div
+      className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700`}
+    >
+      {getInitials(name)}
+    </div>
+  );
+}
 
 export function UsersPage() {
   const { profile: currentProfile } = useAuth();
 
   const [users, setUsers] = useState<UserProfile[]>([]);
+
+  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({});
+
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
 
   const [form, setForm] = useState<UserForm>(emptyForm);
 
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+
+  const [avatarPreviewUrl, setAvatarPreviewUrl] = useState<string | null>(null);
+
+  const [fileInputKey, setFileInputKey] = useState(0);
+
   const [loading, setLoading] = useState(true);
+
   const [submitting, setSubmitting] = useState(false);
 
   const [changingUserId, setChangingUserId] = useState<string | null>(null);
 
+  const [removingAvatarUserId, setRemovingAvatarUserId] = useState<
+    string | null
+  >(null);
+
   const [errorMessage, setErrorMessage] = useState("");
+
   const [successMessage, setSuccessMessage] = useState("");
+
+  const loadAvatarUrls = useCallback(async (loadedUsers: UserProfile[]) => {
+    const usersWithAvatar = loadedUsers.filter((user) =>
+      Boolean(user.avatar_path),
+    );
+
+    if (usersWithAvatar.length === 0) {
+      setAvatarUrls({});
+      return;
+    }
+
+    const signedUrlEntries = await Promise.all(
+      usersWithAvatar.map(async (user) => {
+        if (!user.avatar_path) {
+          return null;
+        }
+
+        const { data, error } = await supabase.storage
+          .from("avatars")
+          .createSignedUrl(user.avatar_path, 60 * 60);
+
+        if (error) {
+          console.error(`Erro ao carregar foto de ${user.name}:`, error);
+
+          return null;
+        }
+
+        return [user.id, data.signedUrl] as const;
+      }),
+    );
+
+    const urls: Record<string, string> = {};
+
+    signedUrlEntries.forEach((entry) => {
+      if (entry) {
+        urls[entry[0]] = entry[1];
+      }
+    });
+
+    setAvatarUrls(urls);
+  }, []);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -45,13 +157,15 @@ export function UsersPage() {
       .from("profiles")
       .select(
         `
-          id,
-          name,
-          username,
-          role,
-          active,
-          created_at
-        `,
+        id,
+        name,
+        username,
+        role,
+        active,
+        salary_cents,
+        avatar_path,
+        created_at
+      `,
       )
       .order("role", {
         ascending: true,
@@ -69,32 +183,59 @@ export function UsersPage() {
       return;
     }
 
-    setUsers((data ?? []) as UserProfile[]);
+    const loadedUsers = (data ?? []) as UserProfile[];
+
+    setUsers(loadedUsers);
+
+    await loadAvatarUrls(loadedUsers);
+
     setLoading(false);
-  }, []);
+  }, [loadAvatarUrls]);
 
   useEffect(() => {
     loadUsers();
   }, [loadUsers]);
+
+  useEffect(() => {
+    return () => {
+      if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
+        URL.revokeObjectURL(avatarPreviewUrl);
+      }
+    };
+  }, [avatarPreviewUrl]);
 
   function clearMessages() {
     setErrorMessage("");
     setSuccessMessage("");
   }
 
+  function clearSelectedAvatar() {
+    if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreviewUrl);
+    }
+
+    setAvatarFile(null);
+    setAvatarPreviewUrl(null);
+
+    setFileInputKey((currentKey) => currentKey + 1);
+  }
+
   function resetForm() {
+    clearSelectedAvatar();
     setEditingUser(null);
     setForm(emptyForm);
   }
 
   function startEditing(user: UserProfile) {
     clearMessages();
+    clearSelectedAvatar();
 
     setEditingUser(user);
 
     setForm({
       name: user.name,
       role: user.role,
+      salary: formatMoneyInput(String(user.salary_cents)),
     });
 
     window.scrollTo({
@@ -106,6 +247,41 @@ export function UsersPage() {
   function cancelEditing() {
     clearMessages();
     resetForm();
+  }
+
+  function handleAvatarChange(event: ChangeEvent<HTMLInputElement>) {
+    clearMessages();
+
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    if (!allowedImageTypes.includes(file.type)) {
+      setErrorMessage("Selecione uma imagem JPG, PNG ou WEBP.");
+
+      setFileInputKey((currentKey) => currentKey + 1);
+
+      return;
+    }
+
+    if (file.size > maximumImageSize) {
+      setErrorMessage("A imagem deve possuir no máximo 5 MB.");
+
+      setFileInputKey((currentKey) => currentKey + 1);
+
+      return;
+    }
+
+    if (avatarPreviewUrl && avatarPreviewUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(avatarPreviewUrl);
+    }
+
+    const previewUrl = URL.createObjectURL(file);
+
+    setAvatarFile(file);
+    setAvatarPreviewUrl(previewUrl);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -120,6 +296,15 @@ export function UsersPage() {
 
     if (!normalizedName) {
       setErrorMessage("Informe o nome do usuário.");
+
+      return;
+    }
+
+    const salaryCents = moneyInputToNonNegativeCents(form.salary);
+
+    if (salaryCents === null) {
+      setErrorMessage("Informe um salário válido.");
+
       return;
     }
 
@@ -129,11 +314,38 @@ export function UsersPage() {
 
     setSubmitting(true);
 
+    let avatarPath = editingUser.avatar_path;
+
+    if (avatarFile) {
+      avatarPath = `${editingUser.id}/avatar`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("avatars")
+        .upload(avatarPath, avatarFile, {
+          upsert: true,
+          contentType: avatarFile.type,
+          cacheControl: "3600",
+        });
+
+      if (uploadError) {
+        console.error("Erro ao enviar foto:", uploadError);
+
+        setErrorMessage(
+          uploadError.message || "Não foi possível enviar a foto.",
+        );
+
+        setSubmitting(false);
+        return;
+      }
+    }
+
     const { error } = await supabase
       .from("profiles")
       .update({
         name: normalizedName,
         role,
+        salary_cents: salaryCents,
+        avatar_path: avatarPath,
       })
       .eq("id", editingUser.id);
 
@@ -148,10 +360,79 @@ export function UsersPage() {
 
     resetForm();
 
-    setSuccessMessage("Usuário atualizado com sucesso.");
+    setSuccessMessage("Usuário, salário e foto atualizados com sucesso.");
 
     await loadUsers();
+
     setSubmitting(false);
+  }
+
+  async function removeAvatar(user: UserProfile) {
+    clearMessages();
+
+    if (!user.avatar_path) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Deseja remover a foto de "${user.name}"?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setRemovingAvatarUserId(user.id);
+
+    const { error: storageError } = await supabase.storage
+      .from("avatars")
+      .remove([user.avatar_path]);
+
+    if (storageError) {
+      console.error("Erro ao remover foto:", storageError);
+
+      setErrorMessage("Não foi possível remover a foto.");
+
+      setRemovingAvatarUserId(null);
+      return;
+    }
+
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        avatar_path: null,
+      })
+      .eq("id", user.id);
+
+    if (profileError) {
+      console.error("Erro ao atualizar perfil:", profileError);
+
+      setErrorMessage(
+        "A foto foi removida, mas não foi possível atualizar o perfil.",
+      );
+
+      setRemovingAvatarUserId(null);
+      return;
+    }
+
+    if (editingUser?.id === user.id) {
+      setEditingUser((currentUser) =>
+        currentUser
+          ? {
+              ...currentUser,
+              avatar_path: null,
+            }
+          : null,
+      );
+
+      clearSelectedAvatar();
+    }
+
+    setSuccessMessage("Foto removida com sucesso.");
+
+    await loadUsers();
+
+    setRemovingAvatarUserId(null);
   }
 
   async function toggleUserStatus(user: UserProfile) {
@@ -159,6 +440,7 @@ export function UsersPage() {
 
     if (user.id === currentProfile?.id) {
       setErrorMessage("Você não pode desativar seu próprio usuário.");
+
       return;
     }
 
@@ -197,8 +479,12 @@ export function UsersPage() {
     );
 
     await loadUsers();
+
     setChangingUserId(null);
   }
+
+  const editingAvatarUrl =
+    avatarPreviewUrl || (editingUser ? avatarUrls[editingUser.id] : null);
 
   return (
     <section>
@@ -208,7 +494,7 @@ export function UsersPage() {
         <h2 className="mt-1 text-3xl font-bold text-slate-900">Usuários</h2>
 
         <p className="mt-2 text-slate-600">
-          Gerencie os familiares que possuem acesso ao sistema.
+          Gerencie os familiares, salários e fotos.
         </p>
       </div>
 
@@ -218,8 +504,8 @@ export function UsersPage() {
         </h3>
 
         <p className="mt-2 text-sm leading-6 text-blue-800">
-          Crie o login em Authentication → Users no painel do Supabase. Depois
-          disso, o usuário aparecerá automaticamente nesta página.
+          Crie o login em Authentication → Users no painel do Supabase. Depois,
+          edite o usuário nesta página para cadastrar salário e foto.
         </p>
       </div>
 
@@ -235,7 +521,7 @@ export function UsersPage() {
         </div>
       )}
 
-      <div className="mt-8 grid items-start gap-6 lg:grid-cols-[360px_1fr]">
+      <div className="mt-8 grid items-start gap-6 lg:grid-cols-[380px_1fr]">
         <form
           onSubmit={handleSubmit}
           className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
@@ -246,13 +532,56 @@ export function UsersPage() {
 
           {!editingUser && (
             <p className="mt-2 text-sm leading-6 text-slate-500">
-              Clique em editar ao lado de um familiar para alterar seu nome ou
-              nível de acesso.
+              Clique em editar para alterar nome, salário, foto ou nível de
+              acesso.
             </p>
           )}
 
           {editingUser && (
             <div className="mt-6 space-y-5">
+              <div className="flex flex-col items-center rounded-xl bg-slate-50 p-5 text-center">
+                <Avatar
+                  name={form.name || editingUser.name}
+                  imageUrl={editingAvatarUrl}
+                  large
+                />
+
+                <label
+                  htmlFor="user-avatar"
+                  className="mt-4 cursor-pointer rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+                >
+                  {editingUser.avatar_path || avatarFile
+                    ? "Trocar foto"
+                    : "Adicionar foto"}
+                </label>
+
+                <input
+                  key={fileInputKey}
+                  id="user-avatar"
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={handleAvatarChange}
+                  className="sr-only"
+                />
+
+                <p className="mt-2 text-xs text-slate-500">
+                  JPG, PNG ou WEBP. Máximo de 5 MB.
+                </p>
+
+                {editingUser.avatar_path && (
+                  <button
+                    type="button"
+                    onClick={() => removeAvatar(editingUser)}
+                    disabled={removingAvatarUserId === editingUser.id}
+                    className="mt-3 text-sm font-medium text-red-600 transition hover:text-red-700 disabled:opacity-50"
+                  >
+                    {removingAvatarUserId === editingUser.id
+                      ? "Removendo foto..."
+                      : "Remover foto atual"}
+                  </button>
+                )}
+              </div>
+
               <div>
                 <label
                   htmlFor="user-name"
@@ -278,6 +607,40 @@ export function UsersPage() {
 
               <div>
                 <label
+                  htmlFor="user-salary"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  Salário mensal
+                </label>
+
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
+                    R$
+                  </span>
+
+                  <input
+                    id="user-salary"
+                    type="text"
+                    inputMode="numeric"
+                    value={form.salary}
+                    onChange={(event) =>
+                      setForm((currentForm) => ({
+                        ...currentForm,
+                        salary: formatMoneyInput(event.target.value),
+                      }))
+                    }
+                    placeholder="0,00"
+                    className="w-full rounded-lg border border-slate-300 py-3 pl-12 pr-4 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
+
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  Este valor será comparado com as contas de cada mês.
+                </p>
+              </div>
+
+              <div>
+                <label
                   htmlFor="user-username"
                   className="mb-2 block text-sm font-medium text-slate-700"
                 >
@@ -291,11 +654,6 @@ export function UsersPage() {
                   disabled
                   className="w-full cursor-not-allowed rounded-lg border border-slate-200 bg-slate-100 px-4 py-3 text-slate-500"
                 />
-
-                <p className="mt-2 text-xs text-slate-500">
-                  O usuário não pode ser alterado nesta tela porque está
-                  vinculado ao login.
-                </p>
               </div>
 
               <div>
@@ -396,37 +754,51 @@ export function UsersPage() {
                 return (
                   <article key={user.id} className="p-5 sm:p-6">
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-                      <div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h4 className="text-lg font-bold text-slate-900">
-                            {user.name}
-                          </h4>
+                      <div className="flex items-center gap-4">
+                        <Avatar
+                          name={user.name}
+                          imageUrl={avatarUrls[user.id]}
+                        />
 
-                          {isCurrentUser && (
-                            <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                              Você
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-lg font-bold text-slate-900">
+                              {user.name}
+                            </h4>
+
+                            {isCurrentUser && (
+                              <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                                Você
+                              </span>
+                            )}
+
+                            <span
+                              className={
+                                user.active
+                                  ? "rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700"
+                                  : "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500"
+                              }
+                            >
+                              {user.active ? "Ativo" : "Inativo"}
                             </span>
-                          )}
+                          </div>
 
-                          <span
-                            className={
-                              user.active
-                                ? "rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700"
-                                : "rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500"
-                            }
-                          >
-                            {user.active ? "Ativo" : "Inativo"}
-                          </span>
-                        </div>
+                          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+                            <span>Usuário: {user.username}</span>
 
-                        <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
-                          <span>Usuário: {user.username}</span>
+                            <span>
+                              {user.role === "admin"
+                                ? "Administrador"
+                                : "Usuário comum"}
+                            </span>
+                          </div>
 
-                          <span>
-                            {user.role === "admin"
-                              ? "Administrador"
-                              : "Usuário comum"}
-                          </span>
+                          <p className="mt-2 text-sm text-slate-500">
+                            Salário:{" "}
+                            <strong className="font-semibold text-slate-800">
+                              {formatCurrencyFromCents(user.salary_cents)}
+                            </strong>
+                          </p>
                         </div>
                       </div>
 

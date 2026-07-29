@@ -11,6 +11,13 @@ type DashboardUser = {
   name: string;
 };
 
+type DashboardProfile = {
+  id: string;
+  name: string;
+  salary_cents: number;
+  active: boolean;
+};
+
 type DashboardInvoiceItem = {
   id: string;
   amount_cents: number;
@@ -27,9 +34,11 @@ type DashboardInvoice = {
 
 type MonthlySummary = {
   monthIndex: number;
+  salaryTotal: number;
   total: number;
   paidTotal: number;
   openTotal: number;
+  remaining: number;
   invoiceCount: number;
   itemCount: number;
 };
@@ -53,6 +62,10 @@ function getMonthValue(year: number, monthIndex: number) {
   return `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
 }
 
+function getBalanceTextClass(value: number) {
+  return value >= 0 ? "text-emerald-700" : "text-red-600";
+}
+
 export function DashboardPage() {
   const { profile } = useAuth();
 
@@ -65,6 +78,8 @@ export function DashboardPage() {
   const [selectedUserId, setSelectedUserId] = useState("");
 
   const [invoices, setInvoices] = useState<DashboardInvoice[]>([]);
+
+  const [profiles, setProfiles] = useState<DashboardProfile[]>([]);
 
   const [loading, setLoading] = useState(true);
 
@@ -107,10 +122,11 @@ export function DashboardPage() {
 
     const nextYearFirstMonth = `${selectedYear + 1}-01-01`;
 
-    const { data, error } = await supabase
-      .from("invoices")
-      .select(
-        `
+    const [invoicesResult, profilesResult] = await Promise.all([
+      supabase
+        .from("invoices")
+        .select(
+          `
         id,
         invoice_month,
         status,
@@ -125,24 +141,45 @@ export function DashboardPage() {
           )
         )
       `,
-      )
-      .gte("invoice_month", firstMonth)
-      .lt("invoice_month", nextYearFirstMonth)
-      .order("invoice_month", {
-        ascending: true,
-      });
+        )
+        .gte("invoice_month", firstMonth)
+        .lt("invoice_month", nextYearFirstMonth)
+        .order("invoice_month", {
+          ascending: true,
+        }),
 
-    if (error) {
-      console.error("Erro ao carregar o dashboard:", error);
+      supabase
+        .from("profiles")
+        .select(
+          `
+        id,
+        name,
+        salary_cents,
+        active
+      `,
+        )
+        .eq("active", true)
+        .order("name", {
+          ascending: true,
+        }),
+    ]);
+
+    if (invoicesResult.error || profilesResult.error) {
+      console.error("Erro ao carregar o dashboard:", {
+        invoicesError: invoicesResult.error,
+        profilesError: profilesResult.error,
+      });
 
       setErrorMessage("Não foi possível carregar os valores do ano.");
 
       setInvoices([]);
+      setProfiles([]);
       setLoading(false);
       return;
     }
 
-    const loadedInvoices = (data ?? []) as unknown as DashboardInvoice[];
+    const loadedInvoices = (invoicesResult.data ??
+      []) as unknown as DashboardInvoice[];
 
     setInvoices(
       loadedInvoices.map((invoice) => ({
@@ -151,6 +188,8 @@ export function DashboardPage() {
       })),
     );
 
+    setProfiles((profilesResult.data ?? []) as DashboardProfile[]);
+
     setLoading(false);
   }, [profile, selectedYear]);
 
@@ -158,21 +197,29 @@ export function DashboardPage() {
     loadDashboard();
   }, [loadDashboard]);
 
-  const userOptions = useMemo(() => {
-    const usersMap = new Map<string, DashboardUser>();
+  const userOptions = useMemo(
+    () =>
+      profiles.map((userProfile) => ({
+        id: userProfile.id,
+        name: userProfile.name,
+      })),
+    [profiles],
+  );
 
-    invoices.forEach((invoice) => {
-      invoice.items.forEach((item) => {
-        if (item.user) {
-          usersMap.set(item.user.id, item.user);
-        }
-      });
-    });
+  const monthlySalary = useMemo(() => {
+    if (selectedUserId) {
+      const selectedProfile = profiles.find(
+        (userProfile) => userProfile.id === selectedUserId,
+      );
 
-    return Array.from(usersMap.values()).sort((firstUser, secondUser) =>
-      firstUser.name.localeCompare(secondUser.name, "pt-BR"),
+      return selectedProfile?.salary_cents ?? 0;
+    }
+
+    return profiles.reduce(
+      (total, userProfile) => total + userProfile.salary_cents,
+      0,
     );
-  }, [invoices]);
+  }, [profiles, selectedUserId]);
 
   const monthlySummaries = useMemo<MonthlySummary[]>(() => {
     return monthNames.map((_monthName, monthIndex) => {
@@ -215,27 +262,38 @@ export function DashboardPage() {
 
       return {
         monthIndex,
+        salaryTotal: monthlySalary,
         total,
         paidTotal,
         openTotal,
+        remaining: monthlySalary - total,
         invoiceCount,
         itemCount,
       };
     });
-  }, [invoices, selectedUserId, selectedYear]);
+  }, [invoices, monthlySalary, selectedUserId, selectedYear]);
 
   const yearTotals = useMemo(() => {
     return monthlySummaries.reduce(
       (totals, month) => ({
+        salaryTotal: totals.salaryTotal + month.salaryTotal,
+
         total: totals.total + month.total,
+
         paidTotal: totals.paidTotal + month.paidTotal,
+
         openTotal: totals.openTotal + month.openTotal,
+
+        remaining: totals.remaining + month.remaining,
+
         itemCount: totals.itemCount + month.itemCount,
       }),
       {
+        salaryTotal: 0,
         total: 0,
         paidTotal: 0,
         openTotal: 0,
+        remaining: 0,
         itemCount: 0,
       },
     );
@@ -352,36 +410,46 @@ export function DashboardPage() {
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Total do ano</p>
+          <p className="text-sm text-slate-500">Salário mensal</p>
+
+          <p className="mt-2 text-2xl font-bold text-blue-700">
+            {formatCurrencyFromCents(monthlySalary)}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-slate-500">Receitas projetadas no ano</p>
 
           <p className="mt-2 text-2xl font-bold text-slate-900">
+            {formatCurrencyFromCents(yearTotals.salaryTotal)}
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-slate-500">Contas do ano</p>
+
+          <p className="mt-2 text-2xl font-bold text-amber-700">
             {formatCurrencyFromCents(yearTotals.total)}
           </p>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Total pago</p>
+          <p className="text-sm text-slate-500">Saldo projetado do ano</p>
 
-          <p className="mt-2 text-2xl font-bold text-emerald-700">
-            {formatCurrencyFromCents(yearTotals.paidTotal)}
+          <p
+            className={`mt-2 text-2xl font-bold ${getBalanceTextClass(
+              yearTotals.remaining,
+            )}`}
+          >
+            {formatCurrencyFromCents(yearTotals.remaining)}
           </p>
         </div>
+      </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Em aberto ou futuro</p>
-
-          <p className="mt-2 text-2xl font-bold text-amber-700">
-            {formatCurrencyFromCents(yearTotals.openTotal)}
-          </p>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Lançamentos</p>
-
-          <p className="mt-2 text-2xl font-bold text-slate-900">
-            {yearTotals.itemCount}
-          </p>
-        </div>
+      <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
+        O valor disponível é uma projeção calculada usando o salário mensal
+        atual menos as contas cadastradas em cada mês. Outras despesas não
+        registradas no sistema não entram no cálculo.
       </div>
 
       {loading && (
@@ -400,6 +468,15 @@ export function DashboardPage() {
               summary.monthIndex === currentMonthIndex;
 
             const hasCharges = summary.itemCount > 0;
+
+            const isPastMonth =
+              selectedYear < currentYear ||
+              (selectedYear === currentYear &&
+                summary.monthIndex < currentMonthIndex);
+
+            const balanceLabel = isPastMonth
+              ? "Saldo calculado"
+              : "Disponível projetado";
 
             return (
               <Link
@@ -426,38 +503,54 @@ export function DashboardPage() {
                 </div>
 
                 <div className="mt-7">
-                  <p className="text-sm text-slate-500">Total do mês</p>
+                  <p className="text-sm text-slate-500">{balanceLabel}</p>
 
                   <p
-                    className={
-                      hasCharges
-                        ? "mt-1 text-2xl font-bold text-slate-900"
-                        : "mt-1 text-xl font-semibold text-slate-400"
-                    }
+                    className={`mt-1 text-2xl font-bold ${getBalanceTextClass(
+                      summary.remaining,
+                    )}`}
                   >
-                    {hasCharges
-                      ? formatCurrencyFromCents(summary.total)
-                      : "Sem lançamentos"}
+                    {formatCurrencyFromCents(summary.remaining)}
                   </p>
                 </div>
 
                 {hasCharges && (
                   <div className="mt-5 space-y-2 border-t border-slate-100 pt-4 text-sm">
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-500">Pago</span>
+                      <span className="text-slate-500">Salário</span>
 
-                      <span className="font-medium text-emerald-700">
-                        {formatCurrencyFromCents(summary.paidTotal)}
+                      <span className="font-medium text-blue-700">
+                        {formatCurrencyFromCents(summary.salaryTotal)}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-500">Em aberto</span>
+                      <span className="text-slate-500">Contas</span>
 
-                      <span className="font-medium text-amber-700">
-                        {formatCurrencyFromCents(summary.openTotal)}
+                      <span className="font-medium text-slate-800">
+                        {formatCurrencyFromCents(summary.total)}
                       </span>
                     </div>
+
+                    {hasCharges && (
+                      <>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Pago</span>
+
+                          <span className="font-medium text-emerald-700">
+                            {formatCurrencyFromCents(summary.paidTotal)}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-slate-500">Em aberto</span>
+
+                          <span className="font-medium text-amber-700">
+                            {formatCurrencyFromCents(summary.openTotal)}
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </div>
                 )}
 

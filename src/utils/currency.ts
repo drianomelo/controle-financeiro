@@ -39,3 +39,19 @@ export function moneyInputToCents(value: string): number | null {
 
   return amountCents;
 }
+
+export function moneyInputToNonNegativeCents(value: string): number | null {
+  const digits = value.replace(/\D/g, "");
+
+  if (!digits) {
+    return 0;
+  }
+
+  const amountCents = Number(digits);
+
+  if (!Number.isSafeInteger(amountCents) || amountCents < 0) {
+    return null;
+  }
+
+  return amountCents;
+}
