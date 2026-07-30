@@ -1,7 +1,6 @@
 import { Route, Routes } from "react-router";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { AppLayout } from "./layouts/AppLayout";
-import { DashboardPage } from "./pages/DashboardPage";
 import { InvoiceMonthPage } from "./pages/InvoiceMonthPage";
 import { LoginPage } from "./pages/LoginPage";
 import { CardsPage } from "./pages/CardsPage";
