@@ -55,6 +55,17 @@ type Invoice = {
   items: InvoiceItem[];
 };
 
+type MonthIncomeSource = {
+  id: string;
+  user_id: string;
+  name: string;
+  recurrence: "monthly" | "once";
+  amount_cents: number;
+  start_month: string;
+  end_month: string | null;
+  active: boolean;
+};
+
 const monthNames = [
   "Janeiro",
   "Fevereiro",
@@ -162,6 +173,22 @@ function formatPaidDate(value: string) {
   }).format(new Date(value));
 }
 
+function incomeAppliesToMonth(income: MonthIncomeSource, monthValue: string) {
+  if (!income.active) {
+    return false;
+  }
+
+  if (income.recurrence === "once") {
+    return income.start_month === monthValue;
+  }
+
+  const alreadyStarted = income.start_month <= monthValue;
+
+  const hasNotEnded = !income.end_month || income.end_month >= monthValue;
+
+  return alreadyStarted && hasNotEnded;
+}
+
 export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
   const { profile } = useAuth();
 
@@ -193,6 +220,10 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [successMessage, setSuccessMessage] = useState("");
+
+  const [monthIncomeSources, setMonthIncomeSources] = useState<
+    MonthIncomeSource[]
+  >([]);
 
   const monthValue =
     validMonth && validYear
@@ -285,9 +316,40 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
     setLoading(false);
   }, [monthValue]);
 
+  const loadMonthIncomeSources = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("income_sources")
+      .select(
+        `
+        id,
+        user_id,
+        name,
+        recurrence,
+        amount_cents,
+        start_month,
+        end_month,
+        active
+      `,
+      )
+      .eq("active", true)
+      .order("start_month", {
+        ascending: true,
+      });
+
+    if (error) {
+      console.error("Erro ao carregar receitas do mês:", error);
+
+      setMonthIncomeSources([]);
+      return;
+    }
+
+    setMonthIncomeSources((data ?? []) as MonthIncomeSource[]);
+  }, []);
+
   useEffect(() => {
     loadInvoices();
-  }, [loadInvoices]);
+    loadMonthIncomeSources();
+  }, [loadInvoices, loadMonthIncomeSources]);
 
   const userOptions = useMemo(() => {
     const usersMap = new Map<
@@ -397,6 +459,64 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
   }, [filteredInvoices]);
 
   const openTotal = monthTotal - paidTotal;
+
+  const incomeMonthValue = `${yearNumber}-${String(monthNumber).padStart(
+    2,
+    "0",
+  )}-01`;
+
+  const monthlyIncomeTotal = useMemo(() => {
+    return monthIncomeSources.reduce((total, income) => {
+      if (effectiveUserId && income.user_id !== effectiveUserId) {
+        return total;
+      }
+
+      if (!incomeAppliesToMonth(income, incomeMonthValue)) {
+        return total;
+      }
+
+      return total + income.amount_cents;
+    }, 0);
+  }, [effectiveUserId, incomeMonthValue, monthIncomeSources]);
+
+  const finalBalance = monthlyIncomeTotal - monthTotal;
+
+  const endingKpis = useMemo(() => {
+    let variableAmount = 0;
+    let variableCount = 0;
+
+    let installmentAmount = 0;
+    let installmentCount = 0;
+
+    filteredInvoices.forEach((invoice) => {
+      invoice.items.forEach((item) => {
+        if (item.charge?.type === "variable") {
+          variableAmount += item.amount_cents;
+          variableCount += 1;
+        }
+
+        const isLastInstallment =
+          item.charge?.type === "installment" &&
+          item.installment_number !== null &&
+          item.installment_total !== null &&
+          item.installment_number === item.installment_total;
+
+        if (isLastInstallment) {
+          installmentAmount += item.amount_cents;
+          installmentCount += 1;
+        }
+      });
+    });
+
+    return {
+      variableAmount,
+      variableCount,
+      installmentAmount,
+      installmentCount,
+      totalAmount: variableAmount + installmentAmount,
+      totalCount: variableCount + installmentCount,
+    };
+  }, [filteredInvoices]);
 
   async function toggleInvoiceStatus(invoice: Invoice) {
     setErrorMessage("");
@@ -535,22 +655,122 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
           <p className="mt-2 text-2xl font-bold text-slate-900">
             {formatCurrencyFromCents(monthTotal)}
           </p>
-        </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Total pago</p>
-
-          <p className="mt-2 text-2xl font-bold text-emerald-700">
-            {formatCurrencyFromCents(paidTotal)}
+          <p className="mt-2 text-sm text-slate-500">
+            Soma de todas as contas deste período
           </p>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Em aberto ou futuro</p>
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
+          <p className="text-sm text-blue-700">Receitas do mês</p>
 
-          <p className="mt-2 text-2xl font-bold text-amber-700">
-            {formatCurrencyFromCents(openTotal)}
+          <p className="mt-2 text-2xl font-bold text-blue-800">
+            {formatCurrencyFromCents(monthlyIncomeTotal)}
           </p>
+
+          <p className="mt-2 text-sm text-blue-700">
+            Salário e demais entradas do período
+          </p>
+        </div>
+
+        <div
+          className={
+            finalBalance >= 0
+              ? "rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm"
+              : "rounded-2xl border border-red-200 bg-red-50 p-5 shadow-sm"
+          }
+        >
+          <p
+            className={
+              finalBalance >= 0
+                ? "text-sm text-emerald-700"
+                : "text-sm text-red-700"
+            }
+          >
+            Saldo final
+          </p>
+
+          <p
+            className={
+              finalBalance >= 0
+                ? "mt-2 text-2xl font-bold text-emerald-800"
+                : "mt-2 text-2xl font-bold text-red-700"
+            }
+          >
+            {formatCurrencyFromCents(finalBalance)}
+          </p>
+
+          <p
+            className={
+              finalBalance >= 0
+                ? "mt-2 text-sm text-emerald-700"
+                : "mt-2 text-sm text-red-700"
+            }
+          >
+            {finalBalance >= 0
+              ? "Valor disponível após as contas"
+              : "As contas ultrapassaram o salário"}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6">
+        <div>
+          <p className="text-sm font-medium text-blue-600">
+            Encerramentos do mês
+          </p>
+
+          <h3 className="mt-1 text-xl font-bold text-slate-900">
+            Quanto deixa de comprometer os próximos meses
+          </h3>
+
+          <p className="mt-1 text-sm text-slate-500">
+            Soma de despesas variáveis e parcelas que terminam neste mês.
+          </p>
+        </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Variáveis encerradas</p>
+
+            <p className="mt-2 text-2xl font-bold text-slate-900">
+              {formatCurrencyFromCents(endingKpis.variableAmount)}
+            </p>
+
+            <p className="mt-2 text-sm text-slate-500">
+              {endingKpis.variableCount}{" "}
+              {endingKpis.variableCount === 1 ? "lançamento" : "lançamentos"}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-sm text-slate-500">Parcelas encerradas</p>
+
+            <p className="mt-2 text-2xl font-bold text-amber-700">
+              {formatCurrencyFromCents(endingKpis.installmentAmount)}
+            </p>
+
+            <p className="mt-2 text-sm text-slate-500">
+              {endingKpis.installmentCount}{" "}
+              {endingKpis.installmentCount === 1
+                ? "parcelamento finalizado"
+                : "parcelamentos finalizados"}
+            </p>
+          </div>
+
+          <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm">
+            <p className="text-sm text-emerald-700">Total encerrado</p>
+
+            <p className="mt-2 text-2xl font-bold text-emerald-800">
+              {formatCurrencyFromCents(endingKpis.totalAmount)}
+            </p>
+
+            <p className="mt-2 text-sm text-emerald-700">
+              {endingKpis.totalCount === 0
+                ? "Nenhum compromisso termina neste mês"
+                : "Valor que pode deixar de aparecer no próximo mês"}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -581,7 +801,7 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
               </select>
             </div>
           )}
-          
+
           <div>
             <label
               htmlFor="invoice-card-filter"

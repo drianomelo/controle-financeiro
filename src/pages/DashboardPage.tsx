@@ -18,6 +18,17 @@ type DashboardProfile = {
   active: boolean;
 };
 
+type DashboardIncomeSource = {
+  id: string;
+  user_id: string;
+  name: string;
+  recurrence: "monthly" | "once";
+  amount_cents: number;
+  start_month: string;
+  end_month: string | null;
+  active: boolean;
+};
+
 type DashboardInvoiceItem = {
   id: string;
   amount_cents: number;
@@ -34,7 +45,7 @@ type DashboardInvoice = {
 
 type MonthlySummary = {
   monthIndex: number;
-  salaryTotal: number;
+  incomeTotal: number;
   total: number;
   paidTotal: number;
   openTotal: number;
@@ -82,6 +93,31 @@ function isMonthIncludedInProjection(year: number, monthIndex: number) {
   return monthIndex >= PROJECTION_START_MONTH_INDEX;
 }
 
+function getMonthDateValue(year: number, monthIndex: number) {
+  const month = String(monthIndex + 1).padStart(2, "0");
+
+  return `${year}-${month}-01`;
+}
+
+function incomeAppliesToMonth(
+  income: DashboardIncomeSource,
+  monthValue: string,
+) {
+  if (!income.active) {
+    return false;
+  }
+
+  if (income.recurrence === "once") {
+    return income.start_month === monthValue;
+  }
+
+  const started = income.start_month <= monthValue;
+
+  const hasNotEnded = !income.end_month || income.end_month >= monthValue;
+
+  return started && hasNotEnded;
+}
+
 function getBalanceTextClass(value: number) {
   return value >= 0 ? "text-emerald-700" : "text-red-600";
 }
@@ -113,6 +149,10 @@ export function DashboardPage({
   const [errorMessage, setErrorMessage] = useState("");
 
   const [warningMessage, setWarningMessage] = useState("");
+
+  const [incomeSources, setIncomeSources] = useState<DashboardIncomeSource[]>(
+    [],
+  );
 
   const loadDashboard = useCallback(async () => {
     if (!profile) {
@@ -149,11 +189,12 @@ export function DashboardPage({
 
     const nextYearFirstMonth = `${selectedYear + 1}-01-01`;
 
-    const [invoicesResult, profilesResult] = await Promise.all([
-      supabase
-        .from("invoices")
-        .select(
-          `
+    const [invoicesResult, profilesResult, incomeSourcesResult] =
+      await Promise.all([
+        supabase
+          .from("invoices")
+          .select(
+            `
         id,
         invoice_month,
         status,
@@ -168,39 +209,64 @@ export function DashboardPage({
           )
         )
       `,
-        )
-        .gte("invoice_month", firstMonth)
-        .lt("invoice_month", nextYearFirstMonth)
-        .order("invoice_month", {
-          ascending: true,
-        }),
+          )
+          .gte("invoice_month", firstMonth)
+          .lt("invoice_month", nextYearFirstMonth)
+          .order("invoice_month", {
+            ascending: true,
+          }),
 
-      supabase
-        .from("profiles")
-        .select(
-          `
+        supabase
+          .from("profiles")
+          .select(
+            `
         id,
         name,
         salary_cents,
         active
       `,
-        )
-        .eq("active", true)
-        .order("name", {
-          ascending: true,
-        }),
-    ]);
+          )
+          .eq("active", true)
+          .order("name", {
+            ascending: true,
+          }),
 
-    if (invoicesResult.error || profilesResult.error) {
+        supabase
+          .from("income_sources")
+          .select(
+            `
+    id,
+    user_id,
+    name,
+    recurrence,
+    amount_cents,
+    start_month,
+    end_month,
+    active
+  `,
+          )
+          .eq("active", true)
+          .order("start_month", {
+            ascending: true,
+          }),
+      ]);
+
+    if (
+      invoicesResult.error ||
+      profilesResult.error ||
+      incomeSourcesResult.error
+    ) {
       console.error("Erro ao carregar o dashboard:", {
         invoicesError: invoicesResult.error,
         profilesError: profilesResult.error,
+        incomeSourcesError: incomeSourcesResult.error,
       });
 
       setErrorMessage("Não foi possível carregar os valores do ano.");
 
       setInvoices([]);
       setProfiles([]);
+      setIncomeSources([]);
       setLoading(false);
       return;
     }
@@ -216,6 +282,10 @@ export function DashboardPage({
     );
 
     setProfiles((profilesResult.data ?? []) as DashboardProfile[]);
+
+    setIncomeSources(
+      (incomeSourcesResult.data ?? []) as DashboardIncomeSource[],
+    );
 
     setLoading(false);
   }, [profile, selectedYear]);
@@ -239,7 +309,7 @@ export function DashboardPage({
     [profiles, selectedUserId],
   );
 
-  const monthlySalary = useMemo(() => {
+  const legacyMonthlySalary = useMemo(() => {
     if (selectedUserId) {
       const selectedProfile = profiles.find(
         (userProfile) => userProfile.id === selectedUserId,
@@ -256,7 +326,29 @@ export function DashboardPage({
 
   const monthlySummaries = useMemo<MonthlySummary[]>(() => {
     return monthNames.map((_monthName, monthIndex) => {
-      const monthValue = getMonthValue(selectedYear, monthIndex);
+      const incomeMonthValue = getMonthDateValue(selectedYear, monthIndex);
+
+      const registeredIncomeTotal = incomeSources.reduce((total, income) => {
+        if (selectedUserId && income.user_id !== selectedUserId) {
+          return total;
+        }
+
+        if (!incomeAppliesToMonth(income, incomeMonthValue)) {
+          return total;
+        }
+
+        return total + income.amount_cents;
+      }, 0);
+
+      const isLegacyHistoricalMonth =
+        selectedYear === PROJECTION_START_YEAR &&
+        monthIndex < PROJECTION_START_MONTH_INDEX;
+
+      const incomeTotal = isLegacyHistoricalMonth
+        ? legacyMonthlySalary
+        : registeredIncomeTotal;
+
+      const invoiceMonthValue = getMonthValue(selectedYear, monthIndex);
 
       let total = 0;
       let paidTotal = 0;
@@ -265,7 +357,7 @@ export function DashboardPage({
       let itemCount = 0;
 
       invoices.forEach((invoice) => {
-        if (invoice.invoice_month !== monthValue) {
+        if (invoice.invoice_month !== invoiceMonthValue) {
           return;
         }
 
@@ -295,16 +387,22 @@ export function DashboardPage({
 
       return {
         monthIndex,
-        salaryTotal: monthlySalary,
+        incomeTotal,
         total,
         paidTotal,
         openTotal,
-        remaining: monthlySalary - total,
+        remaining: incomeTotal - total,
         invoiceCount,
         itemCount,
       };
     });
-  }, [invoices, monthlySalary, selectedUserId, selectedYear]);
+  }, [
+    incomeSources,
+    invoices,
+    legacyMonthlySalary,
+    selectedUserId,
+    selectedYear,
+  ]);
 
   const projectionMonthlySummaries = useMemo(
     () =>
@@ -317,7 +415,7 @@ export function DashboardPage({
   const yearTotals = useMemo(() => {
     return projectionMonthlySummaries.reduce(
       (totals, month) => ({
-        salaryTotal: totals.salaryTotal + month.salaryTotal,
+        incomeTotal: totals.incomeTotal + month.incomeTotal,
 
         total: totals.total + month.total,
 
@@ -330,7 +428,7 @@ export function DashboardPage({
         itemCount: totals.itemCount + month.itemCount,
       }),
       {
-        salaryTotal: 0,
+        incomeTotal: 0,
         total: 0,
         paidTotal: 0,
         openTotal: 0,
@@ -467,40 +565,68 @@ export function DashboardPage({
         </div>
       )}
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Salário mensal</p>
+      <div className="mt-6 grid gap-4 sm:grid-cols-3">
+        <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
+          <p className="text-sm text-blue-700">
+            Receitas projetadas no período
+          </p>
 
-          <p className="mt-2 text-2xl font-bold text-blue-700">
-            {formatCurrencyFromCents(monthlySalary)}
+          <p className="mt-2 text-2xl font-bold text-blue-800">
+            {formatCurrencyFromCents(yearTotals.incomeTotal)}
+          </p>
+
+          <p className="mt-2 text-sm text-blue-700">
+            Salários, bicos, férias, 13º e outras entradas
           </p>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Receitas projetadas no ano</p>
+        <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+          <p className="text-sm text-amber-700">Contas do período</p>
 
-          <p className="mt-2 text-2xl font-bold text-slate-900">
-            {formatCurrencyFromCents(yearTotals.salaryTotal)}
-          </p>
-        </div>
-
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Contas do ano</p>
-
-          <p className="mt-2 text-2xl font-bold text-amber-700">
+          <p className="mt-2 text-2xl font-bold text-amber-800">
             {formatCurrencyFromCents(yearTotals.total)}
           </p>
+
+          <p className="mt-2 text-sm text-amber-700">
+            Total comprometido com as contas
+          </p>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Saldo projetado do ano</p>
+        <div
+          className={
+            yearTotals.remaining >= 0
+              ? "rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm"
+              : "rounded-2xl border border-red-200 bg-red-50 p-5 shadow-sm"
+          }
+        >
+          <p
+            className={
+              yearTotals.remaining >= 0
+                ? "text-sm text-emerald-700"
+                : "text-sm text-red-700"
+            }
+          >
+            Saldo projetado do período
+          </p>
 
           <p
-            className={`mt-2 text-2xl font-bold ${getBalanceTextClass(
-              yearTotals.remaining,
-            )}`}
+            className={
+              yearTotals.remaining >= 0
+                ? "mt-2 text-2xl font-bold text-emerald-800"
+                : "mt-2 text-2xl font-bold text-red-700"
+            }
           >
             {formatCurrencyFromCents(yearTotals.remaining)}
+          </p>
+
+          <p
+            className={
+              yearTotals.remaining >= 0
+                ? "mt-2 text-sm text-emerald-700"
+                : "mt-2 text-sm text-red-700"
+            }
+          >
+            Receitas menos as contas do período
           </p>
         </div>
       </div>
@@ -590,10 +716,12 @@ export function DashboardPage({
                 {isHistoricalMonth ? (
                   <>
                     <div className="mt-7">
-                      <p className="text-sm text-slate-500">Salário do mês</p>
+                      <p className="text-sm text-slate-500">
+                        Salário de referência
+                      </p>
 
                       <p className="mt-1 text-2xl font-bold text-slate-700">
-                        {formatCurrencyFromCents(summary.salaryTotal)}
+                        {formatCurrencyFromCents(summary.incomeTotal)}
                       </p>
                     </div>
 
@@ -623,10 +751,10 @@ export function DashboardPage({
 
                     <div className="mt-5 space-y-2 border-t border-slate-100 pt-4 text-sm">
                       <div className="flex items-center justify-between gap-3">
-                        <span className="text-slate-500">Salário</span>
+                        <span className="text-slate-500">Receitas</span>
 
                         <span className="font-medium text-blue-700">
-                          {formatCurrencyFromCents(summary.salaryTotal)}
+                          {formatCurrencyFromCents(summary.incomeTotal)}
                         </span>
                       </div>
 

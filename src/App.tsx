@@ -9,6 +9,7 @@ import { ChargesPage } from "./pages/ChargesPage";
 import { HomePage } from "./pages/HomePage";
 import { AdminUserDashboardPage } from "./pages/AdminUserDashboardPage";
 import { AdminUserInvoiceMonthPage } from "./pages/AdminUserInvoiceMonthPage";
+import { IncomeSourcesPage } from "./pages/IncomeSourcesPage";
 
 function App() {
   return (
@@ -37,6 +38,8 @@ function App() {
               path="usuarios/:userId/faturas/:year/:month"
               element={<AdminUserInvoiceMonthPage />}
             />
+
+            <Route path="receitas" element={<IncomeSourcesPage />} />
           </Route>
         </Route>
       </Route>
