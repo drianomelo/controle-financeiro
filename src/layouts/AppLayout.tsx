@@ -64,7 +64,7 @@ export function AppLayout() {
       <header className="border-b border-slate-200 bg-slate-100">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 pb-3 pt-3.5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <a href="/" className="flex items-center gap-2">
-            <img className="max-w-15" src="/images/logo.png" alt="logo" />
+            <img className="max-w-15 transition hover:scale-105" src="/images/logo.png" alt="logo" />
           </a>
 
           <div className="flex items-center gap-8">
