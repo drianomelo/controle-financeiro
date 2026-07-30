@@ -4,6 +4,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
 import { formatCurrencyFromCents } from "../utils/currency";
 import { DashboardPage } from "./DashboardPage";
+import { UserAvatar } from "../components/UserAvatar";
 
 type HomeUser = {
   id: string;
@@ -13,44 +14,10 @@ type HomeUser = {
   avatar_path: string | null;
 };
 
-type UserAvatarProps = {
-  name: string;
-  imageUrl?: string | null;
-};
-
-function getInitials(name: string) {
-  return name
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-}
-
-function UserAvatar({ name, imageUrl }: UserAvatarProps) {
-  if (imageUrl) {
-    return (
-      <img
-        src={imageUrl}
-        alt={`Foto de ${name}`}
-        className="h-20 w-20 rounded-full object-cover ring-4 ring-slate-100"
-      />
-    );
-  }
-
-  return (
-    <div className="flex h-20 w-20 items-center justify-center rounded-full bg-blue-100 text-xl font-bold text-blue-700 ring-4 ring-slate-100">
-      {getInitials(name)}
-    </div>
-  );
-}
-
 export function HomePage() {
   const { profile } = useAuth();
 
   const [users, setUsers] = useState<HomeUser[]>([]);
-
-  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({});
 
   const [loading, setLoading] = useState(true);
 
@@ -93,40 +60,6 @@ export function HomePage() {
     const loadedUsers = (data ?? []) as HomeUser[];
 
     setUsers(loadedUsers);
-
-    const usersWithAvatar = loadedUsers.filter((user) =>
-      Boolean(user.avatar_path),
-    );
-
-    const signedUrls = await Promise.all(
-      usersWithAvatar.map(async (user) => {
-        if (!user.avatar_path) {
-          return null;
-        }
-
-        const { data: signedData, error: signedError } = await supabase.storage
-          .from("avatars")
-          .createSignedUrl(user.avatar_path, 60 * 60);
-
-        if (signedError) {
-          console.error(`Erro ao carregar foto de ${user.name}:`, signedError);
-
-          return null;
-        }
-
-        return [user.id, signedData.signedUrl] as const;
-      }),
-    );
-
-    const loadedAvatarUrls: Record<string, string> = {};
-
-    signedUrls.forEach((entry) => {
-      if (entry) {
-        loadedAvatarUrls[entry[0]] = entry[1];
-      }
-    });
-
-    setAvatarUrls(loadedAvatarUrls);
     setLoading(false);
   }, [profile?.role]);
 
@@ -201,7 +134,12 @@ export function HomePage() {
               className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-md"
             >
               <div className="flex items-start justify-between gap-4">
-                <UserAvatar name={user.name} imageUrl={avatarUrls[user.id]} />
+                <UserAvatar
+                  name={user.name}
+                  avatarPath={user.avatar_path}
+                  size={80}
+                  className="ring-4 ring-slate-100"
+                />
 
                 <span className="text-2xl text-blue-600 transition group-hover:translate-x-1">
                   →

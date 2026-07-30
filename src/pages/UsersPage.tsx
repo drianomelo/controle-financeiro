@@ -12,6 +12,8 @@ import {
   formatMoneyInput,
   moneyInputToNonNegativeCents,
 } from "../utils/currency";
+import { UserAvatar } from "../components/UserAvatar";
+import { clearAvatarCache } from "../lib/avatar";
 
 type UserProfile = {
   id: string;
@@ -40,49 +42,10 @@ const allowedImageTypes = ["image/jpeg", "image/png", "image/webp"];
 
 const maximumImageSize = 5 * 1024 * 1024;
 
-function getInitials(name: string) {
-  return name
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((part) => part.charAt(0).toUpperCase())
-    .join("");
-}
-
-type AvatarProps = {
-  name: string;
-  imageUrl?: string | null;
-  large?: boolean;
-};
-
-function Avatar({ name, imageUrl, large = false }: AvatarProps) {
-  const sizeClass = large ? "h-24 w-24 text-2xl" : "h-12 w-12 text-sm";
-
-  if (imageUrl) {
-    return (
-      <img
-        src={imageUrl}
-        alt={`Foto de ${name}`}
-        className={`${sizeClass} shrink-0 rounded-full object-cover ring-2 ring-slate-100`}
-      />
-    );
-  }
-
-  return (
-    <div
-      className={`${sizeClass} flex shrink-0 items-center justify-center rounded-full bg-blue-100 font-bold text-blue-700`}
-    >
-      {getInitials(name)}
-    </div>
-  );
-}
-
 export function UsersPage() {
   const { profile: currentProfile } = useAuth();
 
   const [users, setUsers] = useState<UserProfile[]>([]);
-
-  const [avatarUrls, setAvatarUrls] = useState<Record<string, string>>({});
 
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
 
@@ -107,47 +70,6 @@ export function UsersPage() {
   const [errorMessage, setErrorMessage] = useState("");
 
   const [successMessage, setSuccessMessage] = useState("");
-
-  const loadAvatarUrls = useCallback(async (loadedUsers: UserProfile[]) => {
-    const usersWithAvatar = loadedUsers.filter((user) =>
-      Boolean(user.avatar_path),
-    );
-
-    if (usersWithAvatar.length === 0) {
-      setAvatarUrls({});
-      return;
-    }
-
-    const signedUrlEntries = await Promise.all(
-      usersWithAvatar.map(async (user) => {
-        if (!user.avatar_path) {
-          return null;
-        }
-
-        const { data, error } = await supabase.storage
-          .from("avatars")
-          .createSignedUrl(user.avatar_path, 60 * 60);
-
-        if (error) {
-          console.error(`Erro ao carregar foto de ${user.name}:`, error);
-
-          return null;
-        }
-
-        return [user.id, data.signedUrl] as const;
-      }),
-    );
-
-    const urls: Record<string, string> = {};
-
-    signedUrlEntries.forEach((entry) => {
-      if (entry) {
-        urls[entry[0]] = entry[1];
-      }
-    });
-
-    setAvatarUrls(urls);
-  }, []);
 
   const loadUsers = useCallback(async () => {
     setLoading(true);
@@ -186,11 +108,8 @@ export function UsersPage() {
     const loadedUsers = (data ?? []) as UserProfile[];
 
     setUsers(loadedUsers);
-
-    await loadAvatarUrls(loadedUsers);
-
     setLoading(false);
-  }, [loadAvatarUrls]);
+  }, []);
 
   useEffect(() => {
     loadUsers();
@@ -314,15 +233,26 @@ export function UsersPage() {
 
     setSubmitting(true);
 
+    const oldAvatarPath = editingUser.avatar_path;
+
     let avatarPath = editingUser.avatar_path;
 
+    let uploadedAvatarPath: string | null = null;
+
     if (avatarFile) {
-      avatarPath = `${editingUser.id}/avatar`;
+      const extension =
+        avatarFile.type === "image/jpeg"
+          ? "jpg"
+          : avatarFile.type === "image/png"
+            ? "png"
+            : "webp";
+
+      uploadedAvatarPath = `${editingUser.id}/avatar-${Date.now()}.${extension}`;
 
       const { error: uploadError } = await supabase.storage
         .from("avatars")
-        .upload(avatarPath, avatarFile, {
-          upsert: true,
+        .upload(uploadedAvatarPath, avatarFile, {
+          upsert: false,
           contentType: avatarFile.type,
           cacheControl: "3600",
         });
@@ -337,6 +267,8 @@ export function UsersPage() {
         setSubmitting(false);
         return;
       }
+
+      avatarPath = uploadedAvatarPath;
     }
 
     const { error } = await supabase
@@ -352,11 +284,35 @@ export function UsersPage() {
     if (error) {
       console.error("Erro ao atualizar usuário:", error);
 
+      if (uploadedAvatarPath) {
+        await supabase.storage.from("avatars").remove([uploadedAvatarPath]);
+      }
+
       setErrorMessage("Não foi possível atualizar o usuário.");
 
       setSubmitting(false);
       return;
     }
+
+    if (
+      uploadedAvatarPath &&
+      oldAvatarPath &&
+      oldAvatarPath !== uploadedAvatarPath
+    ) {
+      const { error: removeOldAvatarError } = await supabase.storage
+        .from("avatars")
+        .remove([oldAvatarPath]);
+
+      if (removeOldAvatarError) {
+        console.warn(
+          "O perfil foi atualizado, mas a foto anterior não foi removida:",
+          removeOldAvatarError,
+        );
+      }
+    }
+
+    clearAvatarCache(oldAvatarPath);
+    clearAvatarCache(uploadedAvatarPath);
 
     resetForm();
 
@@ -384,19 +340,12 @@ export function UsersPage() {
 
     setRemovingAvatarUserId(user.id);
 
-    const { error: storageError } = await supabase.storage
-      .from("avatars")
-      .remove([user.avatar_path]);
+    const oldAvatarPath = user.avatar_path;
 
-    if (storageError) {
-      console.error("Erro ao remover foto:", storageError);
-
-      setErrorMessage("Não foi possível remover a foto.");
-
-      setRemovingAvatarUserId(null);
-      return;
-    }
-
+    /*
+     * Primeiro, o perfil deixa de apontar
+     * para o arquivo.
+     */
     const { error: profileError } = await supabase
       .from("profiles")
       .update({
@@ -407,13 +356,27 @@ export function UsersPage() {
     if (profileError) {
       console.error("Erro ao atualizar perfil:", profileError);
 
-      setErrorMessage(
-        "A foto foi removida, mas não foi possível atualizar o perfil.",
-      );
+      setErrorMessage("Não foi possível remover a foto do perfil.");
 
       setRemovingAvatarUserId(null);
       return;
     }
+
+    /*
+     * Depois, apagamos o arquivo do Storage.
+     */
+    const { error: storageError } = await supabase.storage
+      .from("avatars")
+      .remove([oldAvatarPath]);
+
+    if (storageError) {
+      console.warn(
+        "A foto foi removida do perfil, mas o arquivo não foi apagado:",
+        storageError,
+      );
+    }
+
+    clearAvatarCache(oldAvatarPath);
 
     if (editingUser?.id === user.id) {
       setEditingUser((currentUser) =>
@@ -483,9 +446,6 @@ export function UsersPage() {
     setChangingUserId(null);
   }
 
-  const editingAvatarUrl =
-    avatarPreviewUrl || (editingUser ? avatarUrls[editingUser.id] : null);
-
   return (
     <section>
       <div>
@@ -540,10 +500,12 @@ export function UsersPage() {
           {editingUser && (
             <div className="mt-6 space-y-5">
               <div className="flex flex-col items-center rounded-xl bg-slate-50 p-5 text-center">
-                <Avatar
+                <UserAvatar
                   name={form.name || editingUser.name}
-                  imageUrl={editingAvatarUrl}
-                  large
+                  avatarPath={editingUser.avatar_path}
+                  imageUrl={avatarPreviewUrl}
+                  size={96}
+                  className="ring-2 ring-slate-100"
                 />
 
                 <label
@@ -755,9 +717,11 @@ export function UsersPage() {
                   <article key={user.id} className="p-5 sm:p-6">
                     <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
                       <div className="flex items-center gap-4">
-                        <Avatar
+                        <UserAvatar
                           name={user.name}
-                          imageUrl={avatarUrls[user.id]}
+                          avatarPath={user.avatar_path}
+                          size={48}
+                          className="ring-2 ring-slate-100"
                         />
 
                         <div>
