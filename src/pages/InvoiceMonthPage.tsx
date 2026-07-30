@@ -41,6 +41,10 @@ type InvoiceCard = {
   } | null;
 };
 
+type InvoiceMonthPageProps = {
+  forcedUserId?: string;
+};
+
 type Invoice = {
   id: string;
   invoice_month: string;
@@ -158,7 +162,7 @@ function formatPaidDate(value: string) {
   }).format(new Date(value));
 }
 
-export function InvoiceMonthPage() {
+export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
   const { profile } = useAuth();
 
   const { year, month } = useParams();
@@ -181,6 +185,8 @@ export function InvoiceMonthPage() {
   );
 
   const [selectedUserId, setSelectedUserId] = useState("");
+
+  const effectiveUserId = forcedUserId || selectedUserId;
 
   const [selectedCardId, setSelectedCardId] = useState("");
 
@@ -339,8 +345,8 @@ export function InvoiceMonthPage() {
         }
 
         if (
-          selectedUserId &&
-          !invoice.items.some((item) => item.user?.id === selectedUserId)
+          effectiveUserId &&
+          !invoice.items.some((item) => item.user?.id === effectiveUserId)
         ) {
           return false;
         }
@@ -348,19 +354,19 @@ export function InvoiceMonthPage() {
         return true;
       })
       .map((invoice) => {
-        if (!selectedUserId) {
+        if (!effectiveUserId) {
           return invoice;
         }
 
         return {
           ...invoice,
           items: invoice.items.filter(
-            (item) => item.user?.id === selectedUserId,
+            (item) => item.user?.id === effectiveUserId,
           ),
         };
       })
       .filter((invoice) => invoice.items.length > 0);
-  }, [invoices, selectedCardId, selectedUserId]);
+  }, [invoices, selectedCardId, effectiveUserId]);
 
   const monthTotal = useMemo(() => {
     return filteredInvoices.reduce(
@@ -457,12 +463,22 @@ export function InvoiceMonthPage() {
 
   const nextMonth = getAdjacentMonth(yearNumber, monthNumber, 1);
 
+  const backRoute = forcedUserId ? `/usuarios/${forcedUserId}/faturas` : "/";
+
+  const previousMonthRoute = forcedUserId
+    ? `/usuarios/${forcedUserId}/faturas/${previousMonth.year}/${previousMonth.month}`
+    : `/faturas/${previousMonth.year}/${previousMonth.month}`;
+
+  const nextMonthRoute = forcedUserId
+    ? `/usuarios/${forcedUserId}/faturas/${nextMonth.year}/${nextMonth.month}`
+    : `/faturas/${nextMonth.year}/${nextMonth.month}`;
+
   return (
     <section>
       <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <Link
-            to="/"
+            to={backRoute}
             className="text-sm font-medium text-blue-600 hover:text-blue-700"
           >
             ← Voltar para os meses
@@ -485,14 +501,14 @@ export function InvoiceMonthPage() {
 
         <div className="flex gap-2">
           <Link
-            to={`/faturas/${previousMonth.year}/${previousMonth.month}`}
+            to={previousMonthRoute}
             className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             ← Mês anterior
           </Link>
 
           <Link
-            to={`/faturas/${nextMonth.year}/${nextMonth.month}`}
+            to={nextMonthRoute}
             className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
           >
             Próximo mês →
@@ -540,30 +556,32 @@ export function InvoiceMonthPage() {
 
       {profile?.role === "admin" && (
         <div className="mt-6 grid gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:grid-cols-2">
-          <div>
-            <label
-              htmlFor="invoice-user-filter"
-              className="mb-2 block text-sm font-medium text-slate-700"
-            >
-              Filtrar por usuário
-            </label>
+          {!forcedUserId && (
+            <div>
+              <label
+                htmlFor="invoice-user-filter"
+                className="mb-2 block text-sm font-medium text-slate-700"
+              >
+                Filtrar por usuário
+              </label>
 
-            <select
-              id="invoice-user-filter"
-              value={selectedUserId}
-              onChange={(event) => setSelectedUserId(event.target.value)}
-              className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-            >
-              <option value="">Todos os usuários</option>
+              <select
+                id="invoice-user-filter"
+                value={selectedUserId}
+                onChange={(event) => setSelectedUserId(event.target.value)}
+                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+              >
+                <option value="">Todos os usuários</option>
 
-              {userOptions.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
-              ))}
-            </select>
-          </div>
-
+                {userOptions.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          
           <div>
             <label
               htmlFor="invoice-card-filter"

@@ -7,6 +7,9 @@ import { LoginPage } from "./pages/LoginPage";
 import { CardsPage } from "./pages/CardsPage";
 import { UsersPage } from "./pages/UsersPage";
 import { ChargesPage } from "./pages/ChargesPage";
+import { HomePage } from "./pages/HomePage";
+import { AdminUserDashboardPage } from "./pages/AdminUserDashboardPage";
+import { AdminUserInvoiceMonthPage } from "./pages/AdminUserInvoiceMonthPage";
 
 function App() {
   return (
@@ -15,7 +18,7 @@ function App() {
 
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
-          <Route index element={<DashboardPage />} />
+          <Route index element={<HomePage />} />
 
           <Route path="faturas/:year/:month" element={<InvoiceMonthPage />} />
 
@@ -25,6 +28,16 @@ function App() {
             <Route path="contas" element={<ChargesPage />} />
 
             <Route path="usuarios" element={<UsersPage />} />
+
+            <Route
+              path="usuarios/:userId/faturas"
+              element={<AdminUserDashboardPage />}
+            />
+
+            <Route
+              path="usuarios/:userId/faturas/:year/:month"
+              element={<AdminUserInvoiceMonthPage />}
+            />
           </Route>
         </Route>
       </Route>

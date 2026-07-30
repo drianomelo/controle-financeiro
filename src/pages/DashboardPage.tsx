@@ -43,6 +43,11 @@ type MonthlySummary = {
   itemCount: number;
 };
 
+type DashboardPageProps = {
+  forcedUserId?: string;
+  showBackToUsers?: boolean;
+};
+
 const monthNames = [
   "Janeiro",
   "Fevereiro",
@@ -58,15 +63,33 @@ const monthNames = [
   "Dezembro",
 ];
 
+const PROJECTION_START_YEAR = 2026;
+const PROJECTION_START_MONTH_INDEX = 6;
+
 function getMonthValue(year: number, monthIndex: number) {
   return `${year}-${String(monthIndex + 1).padStart(2, "0")}-01`;
+}
+
+function isMonthIncludedInProjection(year: number, monthIndex: number) {
+  if (year > PROJECTION_START_YEAR) {
+    return true;
+  }
+
+  if (year < PROJECTION_START_YEAR) {
+    return false;
+  }
+
+  return monthIndex >= PROJECTION_START_MONTH_INDEX;
 }
 
 function getBalanceTextClass(value: number) {
   return value >= 0 ? "text-emerald-700" : "text-red-600";
 }
 
-export function DashboardPage() {
+export function DashboardPage({
+  forcedUserId = "",
+  showBackToUsers = false,
+}: DashboardPageProps) {
   const { profile } = useAuth();
 
   const today = new Date();
@@ -75,7 +98,11 @@ export function DashboardPage() {
 
   const [selectedYear, setSelectedYear] = useState(currentYear);
 
-  const [selectedUserId, setSelectedUserId] = useState("");
+  const [selectedUserId, setSelectedUserId] = useState(forcedUserId);
+
+  useEffect(() => {
+    setSelectedUserId(forcedUserId);
+  }, [forcedUserId]);
 
   const [invoices, setInvoices] = useState<DashboardInvoice[]>([]);
 
@@ -206,6 +233,12 @@ export function DashboardPage() {
     [profiles],
   );
 
+  const selectedUserProfile = useMemo(
+    () =>
+      profiles.find((userProfile) => userProfile.id === selectedUserId) ?? null,
+    [profiles, selectedUserId],
+  );
+
   const monthlySalary = useMemo(() => {
     if (selectedUserId) {
       const selectedProfile = profiles.find(
@@ -273,8 +306,16 @@ export function DashboardPage() {
     });
   }, [invoices, monthlySalary, selectedUserId, selectedYear]);
 
+  const projectionMonthlySummaries = useMemo(
+    () =>
+      monthlySummaries.filter((month) =>
+        isMonthIncludedInProjection(selectedYear, month.monthIndex),
+      ),
+    [monthlySummaries, selectedYear],
+  );
+
   const yearTotals = useMemo(() => {
-    return monthlySummaries.reduce(
+    return projectionMonthlySummaries.reduce(
       (totals, month) => ({
         salaryTotal: totals.salaryTotal + month.salaryTotal,
 
@@ -297,7 +338,7 @@ export function DashboardPage() {
         itemCount: 0,
       },
     );
-  }, [monthlySummaries]);
+  }, [projectionMonthlySummaries]);
 
   function goToPreviousYear() {
     setSelectedYear((currentYearValue) => currentYearValue - 1);
@@ -311,19 +352,37 @@ export function DashboardPage() {
     setSelectedYear(currentYear);
   }
 
+  const projectionPeriodLabel =
+    selectedYear < PROJECTION_START_YEAR
+      ? "Período anterior ao início das projeções"
+      : selectedYear === PROJECTION_START_YEAR
+        ? `Julho a dezembro de ${selectedYear}`
+        : `Janeiro a dezembro de ${selectedYear}`;
+
   return (
     <section>
       <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
         <div>
+          {showBackToUsers && (
+            <Link
+              to="/"
+              className="mb-5 inline-block text-sm font-medium text-blue-600 hover:text-blue-700"
+            >
+              ← Voltar para os familiares
+            </Link>
+          )}
+
           <p className="text-sm font-medium text-blue-600">Visão anual</p>
 
           <h2 className="mt-1 text-3xl font-bold text-slate-900">
-            Faturas de {selectedYear}
+            {selectedUserProfile
+              ? `${selectedUserProfile.name} — ${selectedYear}`
+              : `Faturas de ${selectedYear}`}
           </h2>
 
           <p className="mt-2 text-slate-600">
-            {profile?.role === "admin"
-              ? "Acompanhe as contas de todos os familiares."
+            {selectedUserProfile
+              ? "Acompanhe as contas, salário e saldo projetado deste familiar."
               : "Acompanhe suas contas e compras ao longo do ano."}
           </p>
         </div>
@@ -381,7 +440,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      {profile?.role === "admin" && (
+      {profile?.role === "admin" && !forcedUserId && (
         <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <label
             htmlFor="dashboard-user-filter"
@@ -446,6 +505,13 @@ export function DashboardPage() {
         </div>
       </div>
 
+      <p className="mt-3 text-sm text-slate-500">
+        Período considerado nos totais:{" "}
+        <strong className="font-semibold text-slate-700">
+          {projectionPeriodLabel}
+        </strong>
+      </p>
+
       <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm leading-6 text-blue-800">
         O valor disponível é uma projeção calculada usando o salário mensal
         atual menos as contas cadastradas em cada mês. Outras despesas não
@@ -469,6 +535,11 @@ export function DashboardPage() {
 
             const hasCharges = summary.itemCount > 0;
 
+            const isHistoricalMonth = !isMonthIncludedInProjection(
+              selectedYear,
+              summary.monthIndex,
+            );
+
             const isPastMonth =
               selectedYear < currentYear ||
               (selectedYear === currentYear &&
@@ -478,11 +549,19 @@ export function DashboardPage() {
               ? "Saldo calculado"
               : "Disponível projetado";
 
+            const monthRoute = forcedUserId
+              ? `/usuarios/${forcedUserId}/faturas/${selectedYear}/${summary.monthIndex + 1}`
+              : `/faturas/${selectedYear}/${summary.monthIndex + 1}`;
+
             return (
               <Link
                 key={monthName}
-                to={`/faturas/${selectedYear}/${summary.monthIndex + 1}`}
-                className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-md"
+                to={monthRoute}
+                className={
+                  isHistoricalMonth
+                    ? "group rounded-2xl border border-slate-200 bg-slate-50 p-6 opacity-75 saturate-50 shadow-sm transition hover:-translate-y-1 hover:border-slate-300 hover:opacity-100 hover:saturate-100 hover:shadow-md"
+                    : "group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-md"
+                }
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
@@ -495,78 +574,108 @@ export function DashboardPage() {
                     </h3>
                   </div>
 
-                  {isCurrentMonth && (
-                    <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                      Atual
+                  {isHistoricalMonth ? (
+                    <span className="rounded-full bg-slate-200 px-3 py-1 text-xs font-medium text-slate-600">
+                      Histórico
                     </span>
+                  ) : (
+                    isCurrentMonth && (
+                      <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                        Atual
+                      </span>
+                    )
                   )}
                 </div>
 
-                <div className="mt-7">
-                  <p className="text-sm text-slate-500">{balanceLabel}</p>
+                {isHistoricalMonth ? (
+                  <>
+                    <div className="mt-7">
+                      <p className="text-sm text-slate-500">Salário do mês</p>
 
-                  <p
-                    className={`mt-1 text-2xl font-bold ${getBalanceTextClass(
-                      summary.remaining,
-                    )}`}
-                  >
-                    {formatCurrencyFromCents(summary.remaining)}
-                  </p>
-                </div>
-
-                {hasCharges && (
-                  <div className="mt-5 space-y-2 border-t border-slate-100 pt-4 text-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-500">Salário</span>
-
-                      <span className="font-medium text-blue-700">
+                      <p className="mt-1 text-2xl font-bold text-slate-700">
                         {formatCurrencyFromCents(summary.salaryTotal)}
-                      </span>
+                      </p>
                     </div>
 
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-slate-500">Contas</span>
+                    <div className="mt-5 flex items-center justify-between border-t border-slate-200 pt-4">
+                      <span className="text-sm font-medium text-slate-500">
+                        Ver histórico
+                      </span>
 
-                      <span className="font-medium text-slate-800">
-                        {formatCurrencyFromCents(summary.total)}
+                      <span className="text-xl text-slate-500 transition group-hover:translate-x-1">
+                        →
                       </span>
                     </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="mt-7">
+                      <p className="text-sm text-slate-500">{balanceLabel}</p>
 
-                    {hasCharges && (
-                      <>
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-slate-500">Pago</span>
+                      <p
+                        className={`mt-1 text-2xl font-bold ${getBalanceTextClass(
+                          summary.remaining,
+                        )}`}
+                      >
+                        {formatCurrencyFromCents(summary.remaining)}
+                      </p>
+                    </div>
 
-                          <span className="font-medium text-emerald-700">
-                            {formatCurrencyFromCents(summary.paidTotal)}
-                          </span>
-                        </div>
+                    <div className="mt-5 space-y-2 border-t border-slate-100 pt-4 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Salário</span>
 
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-slate-500">Em aberto</span>
+                        <span className="font-medium text-blue-700">
+                          {formatCurrencyFromCents(summary.salaryTotal)}
+                        </span>
+                      </div>
 
-                          <span className="font-medium text-amber-700">
-                            {formatCurrencyFromCents(summary.openTotal)}
-                          </span>
-                        </div>
-                      </>
-                    )}
-                  </div>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-slate-500">Contas</span>
+
+                        <span className="font-medium text-slate-800">
+                          {formatCurrencyFromCents(summary.total)}
+                        </span>
+                      </div>
+
+                      {hasCharges && (
+                        <>
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Pago</span>
+
+                            <span className="font-medium text-emerald-700">
+                              {formatCurrencyFromCents(summary.paidTotal)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-slate-500">Em aberto</span>
+
+                            <span className="font-medium text-amber-700">
+                              {formatCurrencyFromCents(summary.openTotal)}
+                            </span>
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    <div className="mt-5 flex items-center justify-between">
+                      <span className="text-sm text-slate-500">
+                        {hasCharges
+                          ? `${summary.itemCount} ${
+                              summary.itemCount === 1
+                                ? "lançamento"
+                                : "lançamentos"
+                            }`
+                          : "Ver mês"}
+                      </span>
+
+                      <span className="text-xl text-blue-600 transition group-hover:translate-x-1">
+                        →
+                      </span>
+                    </div>
+                  </>
                 )}
-
-                <div className="mt-5 flex items-center justify-between">
-                  <span className="text-sm text-slate-500">
-                    {hasCharges
-                      ? `${summary.itemCount} ${
-                          summary.itemCount === 1 ? "lançamento" : "lançamentos"
-                        }`
-                      : "Ver mês"}
-                  </span>
-
-                  <span className="text-xl text-blue-600 transition group-hover:translate-x-1">
-                    →
-                  </span>
-                </div>
               </Link>
             );
           })}
