@@ -5,6 +5,7 @@ import { supabase } from "../lib/supabase";
 import { formatCurrencyFromCents } from "../utils/currency";
 import { DashboardPage } from "./DashboardPage";
 import { UserAvatar } from "../components/UserAvatar";
+import { ChevronDown, Sliders, Trash2 } from "lucide-react";
 
 type HomeUser = {
   id: string;
@@ -73,11 +74,37 @@ export function HomePage() {
 
   return (
     <section className="flex gap-10">
-      <aside className="w-87.5 h-full bg-slate-50 border border-slate-200">
-        teste
+      <aside className="w-87.5 h-full ">
+        <div className="flex items-center justify-between mb-1">
+          <span className="flex items-center gap-1.5 font-semibold text-lg">
+            <Sliders size={14} className="rotate-90 mb-px" />
+            Filtros
+          </span>
+
+          <span className="flex items-center font-medium gap-1.5 text-sm text-red-400">
+            <Trash2 size={14} className="mb-0.5" />
+            Limpar tudo
+          </span>
+        </div>
+
+        <div className="flex items-center justify-between mb-3 pb-3 pt-3.5 rounded-xl px-5 text-sm font-semibold bg-indigo-100 border border-indigo-300">
+          <span>Seleção atual</span>
+
+          <span className="flex items-center">
+            Nenhum filtro <ChevronDown size={14}/>
+          </span>
+        </div>
+
+        <div className="bg-slate-50 border border-slate-200 rounded-xl">
+          <div className="px-6 pb-3 pt-3.5 text-center bg-slate-100 rounded-t-xl font-semibold text-slate-500">
+            Melo Finance
+          </div>
+
+          <div className="p-6 border-t border-slate-200"></div>
+        </div>
       </aside>
 
-      <div>
+      <div className="flex-1">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <h2 className="mt-1 text-3xl font-bold text-slate-900">
