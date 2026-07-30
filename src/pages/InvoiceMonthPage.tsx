@@ -442,24 +442,6 @@ export function InvoiceMonthPage({ forcedUserId = "" }: InvoiceMonthPageProps) {
     );
   }, [filteredInvoices]);
 
-  const paidTotal = useMemo(() => {
-    return filteredInvoices.reduce((invoiceTotal, invoice) => {
-      if (invoice.status !== "paid") {
-        return invoiceTotal;
-      }
-
-      return (
-        invoiceTotal +
-        invoice.items.reduce(
-          (itemTotal, item) => itemTotal + item.amount_cents,
-          0,
-        )
-      );
-    }, 0);
-  }, [filteredInvoices]);
-
-  const openTotal = monthTotal - paidTotal;
-
   const incomeMonthValue = `${yearNumber}-${String(monthNumber).padStart(
     2,
     "0",
