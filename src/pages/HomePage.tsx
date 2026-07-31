@@ -1,30 +1,119 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
+import {
+  ChevronDown,
+  ChevronRight,
+  CircleAlert,
+  CircleCheck,
+  CreditCard,
+  RotateCcw,
+  SlidersHorizontal,
+  Trash2,
+  X,
+} from "lucide-react";
+
+import { UserAvatar } from "../components/UserAvatar";
 import { useAuth } from "../contexts/AuthContext";
 import { supabase } from "../lib/supabase";
 import { formatCurrencyFromCents } from "../utils/currency";
 import { DashboardPage } from "./DashboardPage";
-import { UserAvatar } from "../components/UserAvatar";
-import { ChevronDown, Sliders, Trash2 } from "lucide-react";
+
+type FinancialStatus = "all" | "negative" | "non_negative";
 
 type HomeUser = {
   id: string;
   name: string;
   username: string;
-  salary_cents: number;
   avatar_path: string | null;
 };
+
+type HomeCard = {
+  id: string;
+  name: string;
+  active: boolean;
+};
+
+type HomeIncomeSource = {
+  id: string;
+  user_id: string;
+  recurrence: "monthly" | "once";
+  amount_cents: number;
+  start_month: string;
+  end_month: string | null;
+  active: boolean;
+};
+
+type HomeInvoiceItem = {
+  user_id: string;
+  amount_cents: number;
+};
+
+type HomeInvoice = {
+  id: string;
+  card_id: string;
+  items: HomeInvoiceItem[];
+};
+
+type UserFinancialSummary = HomeUser & {
+  incomeTotal: number;
+  expenseTotal: number;
+  balance: number;
+  usedCardIds: string[];
+  usedCards: HomeCard[];
+};
+
+const currentDate = new Date();
+
+const currentMonthValue = `${currentDate.getFullYear()}-${String(
+  currentDate.getMonth() + 1,
+).padStart(2, "0")}-01`;
+
+const currentMonthLabel = new Intl.DateTimeFormat("pt-BR", {
+  month: "long",
+  year: "numeric",
+}).format(new Date(currentDate.getFullYear(), currentDate.getMonth(), 1));
+
+function incomeAppliesToMonth(income: HomeIncomeSource, monthValue: string) {
+  if (!income.active) {
+    return false;
+  }
+
+  if (income.recurrence === "once") {
+    return income.start_month === monthValue;
+  }
+
+  const alreadyStarted = income.start_month <= monthValue;
+
+  const hasNotEnded = !income.end_month || income.end_month >= monthValue;
+
+  return alreadyStarted && hasNotEnded;
+}
+
+function getStatusButtonClass(selected: boolean) {
+  return selected
+    ? "flex w-full items-center gap-3 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-left text-sm font-semibold text-indigo-700 transition"
+    : "flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50/50";
+}
 
 export function HomePage() {
   const { profile } = useAuth();
 
   const [users, setUsers] = useState<HomeUser[]>([]);
+  const [cards, setCards] = useState<HomeCard[]>([]);
+  const [incomeSources, setIncomeSources] = useState<HomeIncomeSource[]>([]);
+  const [invoices, setInvoices] = useState<HomeInvoice[]>([]);
+
+  const [statusFilter, setStatusFilter] = useState<FinancialStatus>("all");
+
+  const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
 
   const [loading, setLoading] = useState(true);
 
   const [errorMessage, setErrorMessage] = useState("");
 
-  const loadUsers = useCallback(async () => {
+  const [isActiveFiltersOpen, setIsActiveFiltersOpen] = useState(false);
+
+  const loadHomeData = useCallback(async () => {
     if (profile?.role !== "admin") {
       setLoading(false);
       return;
@@ -33,93 +122,467 @@ export function HomePage() {
     setLoading(true);
     setErrorMessage("");
 
-    const { data, error } = await supabase
-      .from("profiles")
-      .select(
-        `
-        id,
-        name,
-        username,
-        salary_cents,
-        avatar_path
-      `,
-      )
-      .eq("active", true)
-      .order("name", {
-        ascending: true,
+    const [usersResult, cardsResult, incomesResult, invoicesResult] =
+      await Promise.all([
+        supabase
+          .from("profiles")
+          .select(
+            `
+          id,
+          name,
+          username,
+          avatar_path
+        `,
+          )
+          .eq("active", true)
+          .order("name", {
+            ascending: true,
+          }),
+
+        supabase
+          .from("cards")
+          .select(
+            `
+          id,
+          name,
+          active
+        `,
+          )
+          .eq("kind", "credit_card")
+          .order("name", {
+            ascending: true,
+          }),
+
+        supabase
+          .from("income_sources")
+          .select(
+            `
+          id,
+          user_id,
+          recurrence,
+          amount_cents,
+          start_month,
+          end_month,
+          active
+        `,
+          )
+          .eq("active", true),
+
+        supabase
+          .from("invoices")
+          .select(
+            `
+          id,
+          card_id,
+
+          items:invoice_items!invoice_items_invoice_id_fkey (
+            user_id,
+            amount_cents
+          )
+        `,
+          )
+          .eq("invoice_month", currentMonthValue),
+      ]);
+
+    if (
+      usersResult.error ||
+      cardsResult.error ||
+      incomesResult.error ||
+      invoicesResult.error
+    ) {
+      console.error("Erro ao carregar página inicial:", {
+        usersError: usersResult.error,
+        cardsError: cardsResult.error,
+        incomesError: incomesResult.error,
+        invoicesError: invoicesResult.error,
       });
 
-    if (error) {
-      console.error("Erro ao carregar familiares:", error);
+      setErrorMessage("Não foi possível carregar os familiares e filtros.");
 
-      setErrorMessage("Não foi possível carregar os familiares.");
+      setUsers([]);
+      setCards([]);
+      setIncomeSources([]);
+      setInvoices([]);
 
       setLoading(false);
       return;
     }
 
-    const loadedUsers = (data ?? []) as HomeUser[];
+    setUsers((usersResult.data ?? []) as HomeUser[]);
 
-    setUsers(loadedUsers);
+    setCards((cardsResult.data ?? []) as HomeCard[]);
+
+    setIncomeSources((incomesResult.data ?? []) as HomeIncomeSource[]);
+
+    const loadedInvoices = (invoicesResult.data ??
+      []) as unknown as HomeInvoice[];
+
+    setInvoices(
+      loadedInvoices.map((invoice) => ({
+        ...invoice,
+        items: invoice.items ?? [],
+      })),
+    );
+
     setLoading(false);
   }, [profile?.role]);
 
   useEffect(() => {
-    loadUsers();
-  }, [loadUsers]);
+    loadHomeData();
+  }, [loadHomeData]);
+
+  const userSummaries = useMemo<UserFinancialSummary[]>(() => {
+    const creditCardIds = new Set(cards.map((card) => card.id));
+
+    return users.map((user) => {
+      const incomeTotal = incomeSources.reduce((total, income) => {
+        if (
+          income.user_id !== user.id ||
+          !incomeAppliesToMonth(income, currentMonthValue)
+        ) {
+          return total;
+        }
+
+        return total + income.amount_cents;
+      }, 0);
+
+      let expenseTotal = 0;
+
+      const usedCardIds = new Set<string>();
+
+      invoices.forEach((invoice) => {
+        const userItems = invoice.items.filter(
+          (item) => item.user_id === user.id,
+        );
+
+        if (userItems.length === 0) {
+          return;
+        }
+
+        expenseTotal += userItems.reduce(
+          (total, item) => total + item.amount_cents,
+          0,
+        );
+
+        /*
+         * Fontes "Fora do cartão" também
+         * entram nas despesas, mas não
+         * aparecem no filtro de cartões.
+         */
+        if (creditCardIds.has(invoice.card_id)) {
+          usedCardIds.add(invoice.card_id);
+        }
+      });
+
+      const usedCards = cards.filter((card) => usedCardIds.has(card.id));
+
+      return {
+        ...user,
+        incomeTotal,
+        expenseTotal,
+        balance: incomeTotal - expenseTotal,
+        usedCardIds: Array.from(usedCardIds),
+        usedCards,
+      };
+    });
+  }, [cards, incomeSources, invoices, users]);
+
+  const availableCards = useMemo(
+    () =>
+      cards.filter((card) =>
+        userSummaries.some((user) => user.usedCardIds.includes(card.id)),
+      ),
+    [cards, userSummaries],
+  );
+
+  const selectedCards = useMemo(
+    () => cards.filter((card) => selectedCardIds.includes(card.id)),
+    [cards, selectedCardIds],
+  );
+
+  const filteredUsers = useMemo(() => {
+    return userSummaries.filter((user) => {
+      if (statusFilter === "negative" && user.balance >= 0) {
+        return false;
+      }
+
+      if (statusFilter === "non_negative" && user.balance < 0) {
+        return false;
+      }
+
+      if (selectedCardIds.length > 0) {
+        const usedAnySelectedCard = selectedCardIds.some((cardId) =>
+          user.usedCardIds.includes(cardId),
+        );
+
+        if (!usedAnySelectedCard) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [selectedCardIds, statusFilter, userSummaries]);
+
+  const activeFilterCount =
+    (statusFilter === "all" ? 0 : 1) + selectedCardIds.length;
+
+  const hasActiveFilters = activeFilterCount > 0;
+
+  function clearFilters() {
+    setStatusFilter("all");
+    setSelectedCardIds([]);
+    setIsActiveFiltersOpen(false);
+  }
+
+  function toggleCardFilter(cardId: string) {
+    setSelectedCardIds((currentCardIds) =>
+      currentCardIds.includes(cardId)
+        ? currentCardIds.filter((currentCardId) => currentCardId !== cardId)
+        : [...currentCardIds, cardId],
+    );
+  }
 
   if (profile?.role !== "admin") {
     return <DashboardPage />;
   }
 
   return (
-    <section className="flex gap-10">
-      <aside className="w-87.5 h-full ">
-        <div className="flex items-center justify-between mb-1">
-          <span className="flex items-center gap-1.5 font-semibold text-lg">
-            <Sliders size={14} className="rotate-90 mb-px" />
+    <section className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-10">
+      <aside className="w-full lg:sticky lg:top-6 lg:w-87.5 lg:shrink-0">
+        <div className="mb-2 flex items-center justify-between">
+          <span className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+            <SlidersHorizontal size={17} />
             Filtros
           </span>
 
-          <span className="flex items-center font-medium gap-1.5 text-sm text-red-400">
-            <Trash2 size={14} className="mb-0.5" />
+          <button
+            type="button"
+            onClick={clearFilters}
+            disabled={!hasActiveFilters}
+            className="flex cursor-pointer items-center gap-1.5 text-sm font-medium text-red-500 transition hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-35"
+          >
+            <Trash2 size={14} className="-mt-0.5" />
             Limpar tudo
-          </span>
+          </button>
         </div>
 
-        <div className="flex items-center justify-between mb-3 pb-3 pt-3.5 rounded-xl px-5 text-sm font-semibold bg-indigo-100 border border-indigo-300">
-          <span>Seleção atual</span>
+        <div className="mb-4 overflow-hidden rounded-xl border border-indigo-200">
+          <button
+            type="button"
+            onClick={() =>
+              setIsActiveFiltersOpen((currentValue) => !currentValue)
+            }
+            aria-expanded={isActiveFiltersOpen}
+            className="flex w-full cursor-pointer items-center justify-between bg-indigo-50 pl-5 pr-3 pt-4 pb-3.5 text-left transition hover:bg-indigo-100"
+          >
+            <span className="text-sm font-semibold text-indigo-950">
+              Seleção atual
+            </span>
 
-          <span className="flex items-center">
-            Nenhum filtro <ChevronDown size={14}/>
-          </span>
+            <div className="flex items-center gap-1">
+              <span className="text-sm font-semibold text-indigo-600">
+                {activeFilterCount === 0
+                  ? "Nenhum filtro"
+                  : `${activeFilterCount} ${
+                      activeFilterCount === 1
+                        ? "filtro ativo"
+                        : "filtros ativos"
+                    }`}
+              </span>
+
+              <ChevronDown
+                size={13}
+                className={`text-indigo-500 transition-transform duration-200 ${
+                  isActiveFiltersOpen ? "rotate-180" : ""
+                }`}
+              />
+            </div>
+          </button>
+
+          {isActiveFiltersOpen && (
+            <div className="flex flex-wrap items-center justify-center gap-2 border-t bg-slate-50 border-indigo-100 p-4 pb-3.5">
+              {!hasActiveFilters && (
+                <p className="text-sm text-slate-400">
+                  Todos os familiares estão sendo exibidos.
+                </p>
+              )}
+
+              {statusFilter !== "all" && (
+                <span className="flex items-center gap-2 rounded-full bg-indigo-100 px-3 py-1.5 text-xs font-semibold text-indigo-700">
+                  {statusFilter === "negative"
+                    ? "Negativados"
+                    : "Não negativados"}
+
+                  <button
+                    type="button"
+                    onClick={() => setStatusFilter("all")}
+                    aria-label="Remover filtro de situação"
+                    className="cursor-pointer rounded-full p-0.5 transition hover:bg-indigo-200"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              )}
+
+              {selectedCards.map((card) => (
+                <span
+                  key={card.id}
+                  className="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-600"
+                >
+                  {card.name}
+
+                  <button
+                    type="button"
+                    onClick={() => toggleCardFilter(card.id)}
+                    aria-label={`Remover filtro ${card.name}`}
+                    className="cursor-pointer rounded-full p-0.5 transition hover:bg-slate-200"
+                  >
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
         </div>
 
-        <div className="bg-slate-50 border border-slate-200 rounded-xl">
-          <div className="px-6 pb-3 pt-3.5 text-center bg-slate-100 rounded-t-xl font-semibold text-slate-500">
-            Melo Finance
+        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
+          <div className="bg-slate-100 px-6 pb-3 pt-3.5 text-center flex justify-between">
+            <p className="font-semibold text-slate-600">Melo Finance</p>
+
+            <p className="mt-1 text-sm capitalize text-slate-400">
+              {currentMonthLabel}
+            </p>
           </div>
 
-          <div className="p-6 border-t border-slate-200"></div>
+          <div className="border-t border-slate-200 p-5">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Situação financeira
+            </p>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                aria-pressed={statusFilter === "negative"}
+                onClick={() =>
+                  setStatusFilter(
+                    statusFilter === "negative" ? "all" : "negative",
+                  )
+                }
+                className={getStatusButtonClass(statusFilter === "negative")}
+              >
+                <CircleAlert size={18} className="text-red-500" />
+
+                <span className="flex-1">Negativados</span>
+
+                <span className="text-xs font-normal text-slate-400">
+                  Saldo menor que zero
+                </span>
+              </button>
+
+              <button
+                type="button"
+                aria-pressed={statusFilter === "non_negative"}
+                onClick={() =>
+                  setStatusFilter(
+                    statusFilter === "non_negative" ? "all" : "non_negative",
+                  )
+                }
+                className={getStatusButtonClass(
+                  statusFilter === "non_negative",
+                )}
+              >
+                <CircleCheck size={18} className="text-emerald-500" />
+
+                <span className="flex-1">Não negativados</span>
+
+                <span className="text-xs font-normal text-slate-400">
+                  Saldo positivo ou zerado
+                </span>
+              </button>
+            </div>
+          </div>
+
+          <div className="border-t border-slate-200 p-5">
+            <div className="mb-3 flex items-center gap-2">
+              <CreditCard size={16} className="text-slate-400" />
+
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Cartões usados
+              </p>
+            </div>
+
+            {availableCards.length === 0 && (
+              <p className="text-sm leading-6 text-slate-400">
+                Nenhum cartão foi utilizado neste mês.
+              </p>
+            )}
+
+            {availableCards.length > 0 && (
+              <div className="space-y-2">
+                {availableCards.map((card) => {
+                  const checked = selectedCardIds.includes(card.id);
+
+                  return (
+                    <label
+                      key={card.id}
+                      className={
+                        checked
+                          ? "flex cursor-pointer items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3"
+                          : "flex cursor-pointer items-center gap-3 rounded-xl border border-transparent px-4 py-3 transition hover:bg-slate-50"
+                      }
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleCardFilter(card.id)}
+                        className="h-4 w-4 cursor-pointer accent-indigo-600"
+                      />
+
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
+                        {card.name}
+                      </span>
+
+                      {!card.active && (
+                        <span className="text-xs text-slate-400">Inativo</span>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       </aside>
 
-      <div className="flex-1">
+      <div className="min-w-0 flex-1">
         <div className="flex flex-col gap-5 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="mt-1 text-3xl font-bold text-slate-900">
-              Familiares
-            </h2>
+            <h2 className="text-3xl font-bold text-slate-900">Familiares</h2>
 
             <p className="mt-2 text-slate-600">
               Selecione um familiar para visualizar suas faturas e projeções
               financeiras.
             </p>
+
+            {!loading && (
+              <p className="mt-2 text-sm text-slate-400">
+                Exibindo{" "}
+                <strong className="font-semibold text-slate-600">
+                  {filteredUsers.length}
+                </strong>{" "}
+                de{" "}
+                <strong className="font-semibold text-slate-600">
+                  {userSummaries.length}
+                </strong>{" "}
+                familiares.
+              </p>
+            )}
           </div>
 
           <button
             type="button"
-            onClick={loadUsers}
+            onClick={loadHomeData}
             disabled={loading}
             className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
           >
@@ -139,7 +602,7 @@ export function HomePage() {
           </div>
         )}
 
-        {!loading && users.length === 0 && (
+        {!loading && userSummaries.length === 0 && (
           <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
             <h3 className="font-semibold text-slate-900">
               Nenhum familiar ativo
@@ -151,56 +614,122 @@ export function HomePage() {
           </div>
         )}
 
-        {!loading && users.length > 0 && (
-          <div className="mt-8 grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {users.map((user) => (
-              <Link
-                key={user.id}
-                to={`/usuarios/${user.id}/faturas`}
-                className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-md"
-              >
-                <div className="flex items-start justify-between gap-4">
-                  <UserAvatar
-                    name={user.name}
-                    avatarPath={user.avatar_path}
-                    size={80}
-                    className="ring-4 ring-slate-100"
-                  />
+        {!loading && userSummaries.length > 0 && filteredUsers.length === 0 && (
+          <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
+            <h3 className="font-semibold text-slate-900">
+              Nenhum familiar corresponde aos filtros
+            </h3>
 
-                  <span className="text-2xl text-blue-600 transition group-hover:translate-x-1">
-                    →
-                  </span>
-                </div>
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="mt-4 cursor-pointer text-sm font-semibold text-indigo-600 hover:text-indigo-700"
+            >
+              Limpar filtros
+            </button>
+          </div>
+        )}
 
-                <div className="mt-5">
-                  <h3 className="text-xl font-bold text-slate-900">
-                    {user.name}
-                  </h3>
+        {!loading && filteredUsers.length > 0 && (
+          <div className="mt-8 grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+            {filteredUsers.map((user) => {
+              const isNegative = user.balance < 0;
 
-                  <p className="mt-1 text-sm text-slate-500">
-                    @{user.username}
-                  </p>
-                </div>
+              return (
+                <Link
+                  key={user.id}
+                  to={`/usuarios/${user.id}/faturas`}
+                  className="group rounded-2xl border border-slate-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-indigo-300 hover:shadow-md"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <UserAvatar
+                      name={user.name}
+                      avatarPath={user.avatar_path}
+                      size={72}
+                      className="ring-4 ring-slate-100"
+                    />
 
-                <div className="mt-5 border-t border-slate-100 pt-4">
-                  <p className="text-xs font-medium uppercase tracking-wide text-slate-400">
-                    Salário mensal
-                  </p>
+                    <span
+                      className={
+                        isNegative
+                          ? "rounded-full bg-red-50 px-3 py-1 text-xs font-semibold text-red-600"
+                          : "rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600"
+                      }
+                    >
+                      {isNegative ? "Negativado" : "Em dia"}
+                    </span>
+                  </div>
 
-                  <p className="mt-1 text-lg font-bold text-slate-900">
-                    {formatCurrencyFromCents(user.salary_cents)}
-                  </p>
-                </div>
+                  <div className="mt-5">
+                    <h3 className="text-xl font-bold text-slate-900">
+                      {user.name}
+                    </h3>
 
-                <div className="mt-5 flex items-center justify-between">
-                  <span className="text-sm font-medium text-blue-600">
-                    Ver faturas por mês
-                  </span>
+                    <p className="mt-1 text-sm text-slate-500">
+                      @{user.username}
+                    </p>
+                  </div>
 
-                  <span className="text-sm text-slate-400">12 meses</span>
-                </div>
-              </Link>
-            ))}
+                  <div className="mt-5 border-t border-slate-100 pt-4">
+                    <p className="text-xs font-medium capitalize text-slate-400">
+                      Saldo de {currentMonthLabel}
+                    </p>
+
+                    <p
+                      className={
+                        isNegative
+                          ? "mt-1 text-2xl font-bold text-red-600"
+                          : "mt-1 text-2xl font-bold text-emerald-600"
+                      }
+                    >
+                      {formatCurrencyFromCents(user.balance)}
+                    </p>
+
+                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                      <div>
+                        <p className="text-slate-400">Receitas</p>
+
+                        <p className="mt-1 font-semibold text-slate-700">
+                          {formatCurrencyFromCents(user.incomeTotal)}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p className="text-slate-400">Contas</p>
+
+                        <p className="mt-1 font-semibold text-slate-700">
+                          {formatCurrencyFromCents(user.expenseTotal)}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {user.usedCards.length > 0 && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {user.usedCards.map((card) => (
+                        <span
+                          key={card.id}
+                          className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-500"
+                        >
+                          {card.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <div className="mt-5 flex items-center justify-between">
+                    <span className="text-sm font-semibold text-indigo-600">
+                      Ver faturas por mês
+                    </span>
+
+                    <ChevronRight
+                      size={18}
+                      className="text-indigo-500 transition-transform group-hover:translate-x-1"
+                    />
+                  </div>
+                </Link>
+              );
+            })}
           </div>
         )}
       </div>
