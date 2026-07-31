@@ -91,8 +91,45 @@ function incomeAppliesToMonth(income: HomeIncomeSource, monthValue: string) {
 
 function getStatusButtonClass(selected: boolean) {
   return selected
-    ? "flex w-full items-center gap-3 rounded-xl border border-indigo-300 bg-indigo-50 px-4 py-3 text-left text-sm font-semibold text-indigo-700 transition"
-    : "flex w-full items-center gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-medium text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50/50";
+    ? "flex-1 flex flex-col cursor-pointer w-full items-center gap-3 rounded-md border border-indigo-300 bg-indigo-50 px-4 pb-4 pt-5 text-sm font-semibold text-indigo-500 transition"
+    : "flex-1 flex flex-col cursor-pointer w-full items-center gap-3 rounded-md border border-slate-200 bg-slate-100 px-4 pb-4 pt-5 text-sm font-medium text-slate-400 transition hover:border-indigo-200 hover:bg-indigo-50";
+}
+
+function normalizeCardName(cardName: string) {
+  return cardName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+}
+
+function getCardColorClass(cardName: string) {
+  const normalizedName = normalizeCardName(cardName);
+
+  if (normalizedName.includes("nubank")) {
+    return "text-purple-400";
+  }
+
+  if (normalizedName.includes("banese")) {
+    return "text-emerald-600/70";
+  }
+
+  if (normalizedName.includes("assai")) {
+    return "text-orange-400/80";
+  }
+
+  if (normalizedName.includes("hiper")) {
+    return "text-red-400";
+  }
+
+  if (
+    normalizedName.includes("magalu") ||
+    normalizedName.includes("magazine luiza")
+  ) {
+    return "text-blue-400";
+  }
+
+  return "text-slate-400";
 }
 
 export function HomePage() {
@@ -381,7 +418,7 @@ export function HomePage() {
             </span>
 
             <div className="flex items-center gap-1">
-              <span className="text-sm font-semibold text-indigo-600">
+              <span className="text-sm font-semibold text-indigo-500">
                 {activeFilterCount === 0
                   ? "Nenhum filtro"
                   : `${activeFilterCount} ${
@@ -455,12 +492,12 @@ export function HomePage() {
             </p>
           </div>
 
-          <div className="border-t border-slate-200 p-5">
-            <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">
+          <div className="border-t border-slate-200 p-6">
+            <p className="mb-3 text-[15px] font-semibold text-slate-600">
               Situação financeira
             </p>
 
-            <div className="space-y-2">
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 aria-pressed={statusFilter === "negative"}
@@ -471,13 +508,9 @@ export function HomePage() {
                 }
                 className={getStatusButtonClass(statusFilter === "negative")}
               >
-                <CircleAlert size={18} className="text-red-500" />
+                <CircleAlert size={26} />
 
                 <span className="flex-1">Negativados</span>
-
-                <span className="text-xs font-normal text-slate-400">
-                  Saldo menor que zero
-                </span>
               </button>
 
               <button
@@ -492,25 +525,17 @@ export function HomePage() {
                   statusFilter === "non_negative",
                 )}
               >
-                <CircleCheck size={18} className="text-emerald-500" />
+                <CircleCheck size={26} />
 
                 <span className="flex-1">Não negativados</span>
-
-                <span className="text-xs font-normal text-slate-400">
-                  Saldo positivo ou zerado
-                </span>
               </button>
             </div>
           </div>
 
-          <div className="border-t border-slate-200 p-5">
-            <div className="mb-3 flex items-center gap-2">
-              <CreditCard size={16} className="text-slate-400" />
-
-              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-                Cartões usados
-              </p>
-            </div>
+          <div className="border-t border-slate-200 p-6">
+            <p className="mb-3 text-[15px] font-semibold text-slate-600">
+              Cartões usados
+            </p>
 
             {availableCards.length === 0 && (
               <p className="text-sm leading-6 text-slate-400">
@@ -528,24 +553,33 @@ export function HomePage() {
                       key={card.id}
                       className={
                         checked
-                          ? "flex cursor-pointer items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3"
-                          : "flex cursor-pointer items-center gap-3 rounded-xl border border-transparent px-4 py-3 transition hover:bg-slate-50"
+                          ? "flex cursor-pointer items-center justify-between gap-3 rounded-md border border-indigo-300 bg-indigo-50 px-4 pb-3 pt-3.5"
+                          : "flex cursor-pointer items-center justify-between gap-3 rounded-md bg-slate-100 border border-slate-200 px-4 pb-3 pt-3.5 transition hover:border-indigo-200 hover:bg-indigo-50"
                       }
                     >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleCardFilter(card.id)}
-                        className="h-4 w-4 cursor-pointer accent-indigo-600"
+                      <div className="flex items-center gap-3">
+                        <span
+                          className={`w-2 h-2 rounded-full border ring ${checked ? "bg-indigo-400 ring-indigo-400 border-indigo-100" : "bg-slate-300 ring-slate-300 border-slate-100"}`}
+                        />
+
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleCardFilter(card.id)}
+                          className="hidden"
+                        />
+
+                        <span
+                          className={`min-w-0 flex-1 truncate text-sm ${checked ? "text-indigo-500 font-semibold" : "text-slate-400 font-medium"}`}
+                        >
+                          {card.name}
+                        </span>
+                      </div>
+
+                      <CreditCard
+                        size={20}
+                        className={getCardColorClass(card.name)}
                       />
-
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">
-                        {card.name}
-                      </span>
-
-                      {!card.active && (
-                        <span className="text-xs text-slate-400">Inativo</span>
-                      )}
                     </label>
                   );
                 })}
