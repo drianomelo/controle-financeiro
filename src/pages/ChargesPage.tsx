@@ -11,6 +11,7 @@ import {
   formatMoneyInput,
   moneyInputToCents,
 } from "../utils/currency";
+import { UserAvatar } from "../components/UserAvatar";
 
 type ChargeType = "variable" | "fixed" | "installment";
 
@@ -18,6 +19,8 @@ type UserOption = {
   id: string;
   name: string;
   username: string;
+  active: boolean;
+  avatar_path: string | null;
 };
 
 type CardOption = {
@@ -56,7 +59,6 @@ type Charge = {
 
 type ChargeForm = {
   name: string;
-  userId: string;
   cardId: string;
   type: ChargeType;
   amount: string;
@@ -80,6 +82,9 @@ const monthNames = [
   "Dezembro",
 ];
 
+const PAGE_SIZE = 10;
+
+
 function getCurrentMonthValue() {
   const currentDate = new Date();
 
@@ -93,7 +98,6 @@ function getCurrentMonthValue() {
 function getEmptyForm(): ChargeForm {
   return {
     name: "",
-    userId: "",
     cardId: "",
     type: "variable",
     amount: "",
@@ -160,13 +164,35 @@ export function ChargesPage() {
 
   const [successMessage, setSuccessMessage] = useState("");
 
+  const [selectedUserId, setSelectedUserId] =
+    useState("");
+
+  const [searchTerm, setSearchTerm] =
+    useState("");
+
+  const [typeFilter, setTypeFilter] =
+    useState("");
+
+  const [sourceFilter, setSourceFilter] =
+    useState("");
+
+  const [statusFilter, setStatusFilter] =
+    useState<"all" | "active" | "inactive">("all");
+
+  const [currentPage, setCurrentPage] =
+    useState(1);
+
+  const [totalCharges, setTotalCharges] =
+    useState(0);
+
+
   const loadReferences = useCallback(async () => {
     setLoadingReferences(true);
 
     const [usersResult, cardsResult] = await Promise.all([
       supabase
         .from("profiles")
-        .select("id, name, username")
+        .select("id, name, username, active, avatar_path")
         .eq("active", true)
         .order("name", {
           ascending: true,
@@ -209,9 +235,23 @@ export function ChargesPage() {
   }, []);
 
   const loadCharges = useCallback(async () => {
-    setLoadingCharges(true);
+    if (!selectedUserId) {
+      setCharges([]);
+      setTotalCharges(0);
+      setLoadingCharges(false);
+      return;
+    }
 
-    const { data, error } = await supabase
+    setLoadingCharges(true);
+    setErrorMessage("");
+
+    const from =
+      (currentPage - 1) * PAGE_SIZE;
+
+    const to =
+      from + PAGE_SIZE - 1;
+
+    let query = supabase
       .from("charges")
       .select(
         `
@@ -224,40 +264,129 @@ export function ChargesPage() {
         end_invoice_month,
         active,
         created_at,
+
         user:profiles!charges_user_id_fkey (
           id,
           name,
           username
         ),
+
         card:cards!charges_card_id_fkey (
           id,
           name,
           last_four
         )
       `,
+        {
+          count: "exact",
+        },
       )
+      .eq(
+        "user_id",
+        selectedUserId,
+      );
+
+    /*
+     * Busca pelo nome da conta.
+     */
+    if (searchTerm.trim()) {
+      query = query.ilike(
+        "name",
+        `%${searchTerm.trim()}%`,
+      );
+    }
+
+    /*
+     * Filtro por tipo.
+     */
+    if (typeFilter) {
+      query = query.eq(
+        "type",
+        typeFilter,
+      );
+    }
+
+    /*
+     * Filtro por cartão/origem.
+     */
+    if (sourceFilter) {
+      query = query.eq(
+        "card_id",
+        sourceFilter,
+      );
+    }
+
+    /*
+     * Filtro por status.
+     */
+    if (statusFilter === "active") {
+      query = query.eq(
+        "active",
+        true,
+      );
+    }
+
+    if (statusFilter === "inactive") {
+      query = query.eq(
+        "active",
+        false,
+      );
+    }
+
+    const {
+      data,
+      error,
+      count,
+    } = await query
       .order("created_at", {
         ascending: false,
-      });
+      })
+      .range(
+        from,
+        to,
+      );
 
     if (error) {
-      console.error("Erro ao carregar contas:", error);
+      console.error(
+        "Erro ao carregar contas:",
+        error,
+      );
 
-      setErrorMessage("Não foi possível carregar as contas.");
+      setErrorMessage(
+        "Não foi possível carregar as contas.",
+      );
 
+      setCharges([]);
+      setTotalCharges(0);
       setLoadingCharges(false);
       return;
     }
 
-    setCharges((data ?? []) as unknown as Charge[]);
+    setCharges(
+      (data ?? []) as unknown as Charge[],
+    );
+
+    setTotalCharges(
+      count ?? 0,
+    );
 
     setLoadingCharges(false);
-  }, []);
+  }, [
+    currentPage,
+    searchTerm,
+    selectedUserId,
+    sourceFilter,
+    statusFilter,
+    typeFilter,
+  ]);
 
   useEffect(() => {
     loadReferences();
+  }, [loadReferences]);
+
+  useEffect(() => {
     loadCharges();
-  }, [loadReferences, loadCharges]);
+  }, [loadCharges]);
 
   const amountCents = useMemo(
     () => moneyInputToCents(form.amount),
@@ -272,10 +401,29 @@ export function ChargesPage() {
   const selectedUserDirectSource = useMemo(
     () =>
       cards.find(
-        (card) => card.kind === "direct" && card.owner_user_id === form.userId,
+        (card) =>
+          card.kind === "direct" &&
+          card.owner_user_id === selectedUserId,
       ) ?? null,
-    [cards, form.userId],
+    [cards, selectedUserId],
   );
+
+  const availableSources = useMemo(() => {
+    if (!selectedUserId) {
+      return [];
+    }
+
+    return cards.filter((card) => {
+      if (card.kind === "credit_card") {
+        return true;
+      }
+
+      return (
+        card.kind === "direct" &&
+        card.owner_user_id === selectedUserId
+      );
+    });
+  }, [cards, selectedUserId]);
 
   const installmentPreview = useMemo(() => {
     if (form.type !== "installment" || !amountCents) {
@@ -306,16 +454,7 @@ export function ChargesPage() {
     }));
   }
 
-  function handleUserChange(userId: string) {
-    setForm((currentForm) => ({
-      ...currentForm,
-      userId,
-      cardId: "",
-    }));
 
-    setErrorMessage("");
-    setSuccessMessage("");
-  }
 
   function handleTypeChange(type: ChargeType) {
     setForm((currentForm) => ({
@@ -342,7 +481,6 @@ export function ChargesPage() {
 
     setForm({
       name: charge.name,
-      userId: charge.user?.id ?? "",
       cardId: charge.card?.id ?? "",
       type: charge.type,
       amount: formatMoneyInput(String(charge.amount_cents)),
@@ -372,8 +510,8 @@ export function ChargesPage() {
       return "Informe o nome da conta.";
     }
 
-    if (!form.userId) {
-      return "Selecione quem realizou a compra.";
+    if (!selectedUserId) {
+      return "Selecione um familiar.";
     }
 
     if (!form.cardId) {
@@ -417,6 +555,27 @@ export function ChargesPage() {
     return null;
   }
 
+  function selectUser(userId: string) {
+    if (userId === selectedUserId) {
+      return;
+    }
+
+    setSelectedUserId(userId);
+
+    setForm(getEmptyForm());
+    setEditingCharge(null);
+
+    setSearchTerm("");
+    setTypeFilter("");
+    setSourceFilter("");
+    setStatusFilter("all");
+
+    setCurrentPage(1);
+
+    setErrorMessage("");
+    setSuccessMessage("");
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
@@ -451,11 +610,11 @@ export function ChargesPage() {
     const functionArguments = {
       ...(editingCharge
         ? {
-            p_charge_id: editingCharge.id,
-          }
+          p_charge_id: editingCharge.id,
+        }
         : {}),
       p_name: form.name.trim(),
-      p_user_id: form.userId,
+      p_user_id: selectedUserId,
       p_card_id: form.cardId,
       p_type: form.type,
       p_amount_cents: amountCents,
@@ -471,9 +630,9 @@ export function ChargesPage() {
 
       setErrorMessage(
         error.message ||
-          (editingCharge
-            ? "Não foi possível editar a conta."
-            : "Não foi possível cadastrar a conta."),
+        (editingCharge
+          ? "Não foi possível editar a conta."
+          : "Não foi possível cadastrar a conta."),
       );
 
       setSubmitting(false);
@@ -490,7 +649,11 @@ export function ChargesPage() {
         : "Conta cadastrada e faturas geradas com sucesso.",
     );
 
-    await loadCharges();
+    if (!wasEditing && currentPage !== 1) {
+      setCurrentPage(1);
+    } else {
+      await loadCharges();
+    }
 
     setSubmitting(false);
   }
@@ -501,8 +664,8 @@ export function ChargesPage() {
 
     const confirmed = window.confirm(
       `Deseja remover a conta "${charge.name}"?\n\n` +
-        "As cobranças em faturas abertas serão removidas. " +
-        "O histórico de faturas pagas será preservado.",
+      "As cobranças em faturas abertas serão removidas. " +
+      "O histórico de faturas pagas será preservado.",
     );
 
     if (!confirmed) {
@@ -528,12 +691,67 @@ export function ChargesPage() {
       resetForm();
     }
 
-    setSuccessMessage("Conta removida e cobranças abertas excluídas.");
+    setSuccessMessage(
+      "Conta removida e cobranças abertas excluídas.",
+    );
 
-    await loadCharges();
+    if (
+      charges.length === 1 &&
+      currentPage > 1
+    ) {
+      setCurrentPage(
+        (page) => page - 1,
+      );
+    } else {
+      await loadCharges();
+    }
 
     setRemovingChargeId(null);
   }
+
+  const selectedUser = useMemo(
+    () =>
+      users.find(
+        (user) =>
+          user.id === selectedUserId,
+      ) ?? null,
+    [users, selectedUserId],
+  );
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(
+      totalCharges / PAGE_SIZE,
+    ),
+  );
+
+  const hasActiveFilters =
+    Boolean(searchTerm.trim()) ||
+    Boolean(typeFilter) ||
+    Boolean(sourceFilter) ||
+    statusFilter !== "all";
+
+  const firstVisibleItem =
+    totalCharges === 0
+      ? 0
+      : (currentPage - 1) *
+      PAGE_SIZE +
+      1;
+
+  const lastVisibleItem = Math.min(
+    currentPage * PAGE_SIZE,
+    totalCharges,
+  );
+
+  function clearChargeFilters() {
+    setSearchTerm("");
+    setTypeFilter("");
+    setSourceFilter("");
+    setStatusFilter("all");
+    setCurrentPage(1);
+  }
+
+
 
   return (
     <section>
@@ -543,493 +761,774 @@ export function ChargesPage() {
         <h2 className="mt-1 text-3xl font-bold text-slate-900">Contas</h2>
 
         <p className="mt-2 text-slate-600">
-          Cadastre compras e cobranças nas faturas dos familiares.
+          Escolha um familiar para gerenciar suas contas.
         </p>
       </div>
 
-      <div className="mt-8 grid items-start gap-6 xl:grid-cols-[420px_1fr]">
-        <form
-          onSubmit={handleSubmit}
-          className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
-        >
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h3 className="text-xl font-bold text-slate-900">
-                {editingCharge ? "Editar conta" : "Nova conta"}
-              </h3>
+      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        {users.map((user) => {
+          const selected =
+            selectedUserId === user.id;
 
-              <p className="mt-1 text-sm text-slate-500">
-                {editingCharge
-                  ? "As cobranças abertas serão atualizadas automaticamente."
-                  : "O sistema criará as cobranças nas faturas automaticamente."}
-              </p>
+          return (
+            <div
+              key={user.id}
+              onClick={() => selectUser(user.id)}
+              className={`cursor-pointer rounded-lg border px-4 py-3 transition-colors ${selected
+                ? "border-blue-500 bg-blue-100 text-blue-700"
+                : "border-slate-300 hover:bg-slate-100"
+                }`}
+            >
+              <p className="font-medium">{user.name}</p>
             </div>
+          );
+        })}
+      </div>
 
-            {editingCharge && (
-              <button
-                type="button"
-                onClick={cancelEditing}
-                className="text-sm font-medium text-slate-500 transition hover:text-slate-900"
-              >
-                Cancelar
-              </button>
-            )}
-          </div>
+      {!selectedUserId && !loadingReferences && (
+        <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-12 text-center">
+          <h3 className="font-bold text-slate-800">
+            Selecione um familiar
+          </h3>
 
-          <div className="mt-6 space-y-5">
-            <div>
-              <label
-                htmlFor="charge-name"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
-                Nome
-              </label>
+          <p className="mt-2 text-sm text-slate-500">
+            Escolha um dos familiares acima para visualizar
+            e cadastrar suas contas.
+          </p>
+        </div>
+      )}
 
-              <input
-                id="charge-name"
-                type="text"
-                value={form.name}
-                onChange={(event) => updateForm("name", event.target.value)}
-                placeholder="Ex.: Mercado, Netflix ou celular"
-                maxLength={120}
-                className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-              />
-            </div>
+      {selectedUserId && (
+        <div className="mt-8 grid items-start gap-6 xl:grid-cols-[420px_1fr]">
+          <form
+            onSubmit={handleSubmit}
+            className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-slate-900">
+                  {editingCharge ? "Editar conta" : "Nova conta"}
+                </h3>
 
-            <div>
-              <label
-                htmlFor="charge-user"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
-                Quem fez a conta
-              </label>
-
-              <select
-                id="charge-user"
-                value={form.userId}
-                disabled={loadingReferences}
-                onChange={(event) => handleUserChange(event.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:bg-slate-100"
-              >
-                <option value="">Selecione um usuário</option>
-
-                {users.map((user) => (
-                  <option key={user.id} value={user.id}>
-                    {user.name} ({user.username})
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label
-                htmlFor="charge-card"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
-                Forma de cobrança
-              </label>
-
-              <select
-                id="charge-card"
-                value={form.cardId}
-                disabled={loadingReferences || !form.userId}
-                onChange={(event) => updateForm("cardId", event.target.value)}
-                className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-              >
-                <option value="">
-                  {form.userId
-                    ? "Selecione uma forma de cobrança"
-                    : "Selecione primeiro um usuário"}
-                </option>
-
-                {creditCards.length > 0 && (
-                  <optgroup label="Cartões de crédito">
-                    {creditCards.map((card) => (
-                      <option key={card.id} value={card.id}>
-                        {card.name}
-                        {card.last_four ? ` — final ${card.last_four}` : ""}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-
-                {selectedUserDirectSource && (
-                  <optgroup label="Outras contas">
-                    <option value={selectedUserDirectSource.id}>
-                      Fora do cartão
-                    </option>
-                  </optgroup>
-                )}
-              </select>
-
-              {form.userId && (
-                <p className="mt-2 text-xs leading-5 text-slate-500">
-                  Use “Fora do cartão” para aluguel, faculdade, conta de
-                  telefone e outras cobranças diretas.
+                <p className="mt-1 text-sm text-slate-500">
+                  {editingCharge
+                    ? "As cobranças abertas serão atualizadas automaticamente."
+                    : "O sistema criará as cobranças nas faturas automaticamente."}
                 </p>
+              </div>
+
+              {editingCharge && (
+                <button
+                  type="button"
+                  onClick={cancelEditing}
+                  className="text-sm font-medium text-slate-500 transition hover:text-slate-900"
+                >
+                  Cancelar
+                </button>
               )}
             </div>
 
-            <fieldset>
-              <legend className="mb-2 block text-sm font-medium text-slate-700">
-                Tipo
-              </legend>
-
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleTypeChange("variable")}
-                  className={
-                    form.type === "variable"
-                      ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
-                      : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+            {selectedUser && (
+              <div className="mt-5 flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50 p-4">
+                <UserAvatar
+                  name={selectedUser.name}
+                  avatarPath={
+                    selectedUser.avatar_path
                   }
-                >
-                  Variável
-                </button>
+                  size={42}
+                />
 
-                <button
-                  type="button"
-                  onClick={() => handleTypeChange("fixed")}
-                  className={
-                    form.type === "fixed"
-                      ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
-                      : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                  }
-                >
-                  Fixa
-                </button>
+                <div>
+                  <p className="text-xs font-medium text-indigo-500">
+                    {editingCharge
+                      ? "Editando conta de"
+                      : "Cadastrando conta para"}
+                  </p>
 
-                <button
-                  type="button"
-                  onClick={() => handleTypeChange("installment")}
-                  className={
-                    form.type === "installment"
-                      ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
-                      : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
-                  }
-                >
-                  Parcelada
-                </button>
+                  <p className="font-bold text-indigo-950">
+                    {selectedUser.name}
+                  </p>
+                </div>
               </div>
-            </fieldset>
+            )}
 
-            <div>
-              <label
-                htmlFor="charge-amount"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
-                {form.type === "installment"
-                  ? "Valor total da compra"
-                  : form.type === "fixed"
-                    ? "Valor mensal"
-                    : "Valor da cobrança"}
-              </label>
-
-              <div className="relative">
-                <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
-                  R$
-                </span>
+            <div className="mt-6 space-y-5">
+              <div>
+                <label
+                  htmlFor="charge-name"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  Nome
+                </label>
 
                 <input
-                  id="charge-amount"
+                  id="charge-name"
                   type="text"
-                  inputMode="numeric"
-                  value={form.amount}
-                  onChange={(event) =>
-                    updateForm("amount", formatMoneyInput(event.target.value))
-                  }
-                  placeholder="0,00"
-                  className="w-full rounded-lg border border-slate-300 py-3 pl-12 pr-4 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
-              </div>
-            </div>
-
-            {form.type === "installment" && (
-              <div>
-                <label
-                  htmlFor="installment-count"
-                  className="mb-2 block text-sm font-medium text-slate-700"
-                >
-                  Quantidade de parcelas
-                </label>
-
-                <input
-                  id="installment-count"
-                  type="number"
-                  min={2}
-                  max={120}
-                  value={form.installmentCount}
-                  onChange={(event) =>
-                    updateForm("installmentCount", event.target.value)
-                  }
-                  placeholder="Ex.: 6"
+                  value={form.name}
+                  onChange={(event) => updateForm("name", event.target.value)}
+                  placeholder="Ex.: Mercado, Netflix ou celular"
+                  maxLength={120}
                   className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
                 />
+              </div>
 
-                {installmentPreview && (
-                  <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
-                    Aproximadamente{" "}
-                    <strong>
-                      {installmentPreview.installmentCount}x de{" "}
-                      {formatCurrencyFromCents(installmentPreview.baseAmount)}
-                    </strong>
-                    .
-                    {installmentPreview.remainder > 0 && (
-                      <span>
-                        {" "}
-                        As primeiras {installmentPreview.remainder} parcelas
-                        terão um centavo a mais.
-                      </span>
-                    )}
-                  </div>
+              <div>
+                <label
+                  htmlFor="charge-card"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  Forma de cobrança
+                </label>
+
+                <select
+                  id="charge-card"
+                  value={form.cardId}
+                  disabled={loadingReferences || !selectedUserId}
+                  onChange={(event) => updateForm("cardId", event.target.value)}
+                  className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                >
+                  <option value="">
+                    {selectedUserId
+                      ? "Selecione uma forma de cobrança"
+                      : "Selecione primeiro um usuário"}
+                  </option>
+
+                  {creditCards.length > 0 && (
+                    <optgroup label="Cartões de crédito">
+                      {creditCards.map((card) => (
+                        <option key={card.id} value={card.id}>
+                          {card.name}
+                          {card.last_four ? ` — final ${card.last_four}` : ""}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+
+                  {selectedUserDirectSource && (
+                    <optgroup label="Outras contas">
+                      <option value={selectedUserDirectSource.id}>
+                        Fora do cartão
+                      </option>
+                    </optgroup>
+                  )}
+                </select>
+
+                {selectedUserId && (
+                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                    Use “Fora do cartão” para aluguel, faculdade, conta de
+                    telefone e outras cobranças diretas.
+                  </p>
                 )}
               </div>
-            )}
 
-            <div>
-              <label
-                htmlFor="first-invoice-month"
-                className="mb-2 block text-sm font-medium text-slate-700"
-              >
-                {form.type === "installment"
-                  ? "Primeira parcela"
-                  : "Primeira fatura"}
-              </label>
+              <fieldset>
+                <legend className="mb-2 block text-sm font-medium text-slate-700">
+                  Tipo
+                </legend>
 
-              <input
-                id="first-invoice-month"
-                type="month"
-                value={form.firstInvoiceMonth}
-                onChange={(event) =>
-                  updateForm("firstInvoiceMonth", event.target.value)
-                }
-                className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-              />
-            </div>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleTypeChange("variable")}
+                    className={
+                      form.type === "variable"
+                        ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
+                        : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                    }
+                  >
+                    Variável
+                  </button>
 
-            {form.type === "fixed" && (
+                  <button
+                    type="button"
+                    onClick={() => handleTypeChange("fixed")}
+                    className={
+                      form.type === "fixed"
+                        ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
+                        : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                    }
+                  >
+                    Fixa
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleTypeChange("installment")}
+                    className={
+                      form.type === "installment"
+                        ? "rounded-lg bg-blue-600 px-3 py-3 text-sm font-medium text-white"
+                        : "rounded-lg border border-slate-300 px-3 py-3 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                    }
+                  >
+                    Parcelada
+                  </button>
+                </div>
+              </fieldset>
+
               <div>
                 <label
-                  htmlFor="end-invoice-month"
+                  htmlFor="charge-amount"
                   className="mb-2 block text-sm font-medium text-slate-700"
                 >
-                  Última fatura
+                  {form.type === "installment"
+                    ? "Valor total da compra"
+                    : form.type === "fixed"
+                      ? "Valor mensal"
+                      : "Valor da cobrança"}
                 </label>
 
-                <input
-                  id="end-invoice-month"
-                  type="month"
-                  min={form.firstInvoiceMonth}
-                  value={form.endInvoiceMonth}
-                  onChange={(event) =>
-                    updateForm("endInvoiceMonth", event.target.value)
-                  }
-                  className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
-                />
+                <div className="relative">
+                  <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-500">
+                    R$
+                  </span>
 
-                <p className="mt-2 text-xs leading-5 text-slate-500">
-                  Deixe vazio quando a cobrança não possuir data definida para
-                  terminar.
-                </p>
+                  <input
+                    id="charge-amount"
+                    type="text"
+                    inputMode="numeric"
+                    value={form.amount}
+                    onChange={(event) =>
+                      updateForm("amount", formatMoneyInput(event.target.value))
+                    }
+                    placeholder="0,00"
+                    className="w-full rounded-lg border border-slate-300 py-3 pl-12 pr-4 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+                </div>
               </div>
-            )}
 
-            {errorMessage && (
-              <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
-                {errorMessage}
-              </div>
-            )}
+              {form.type === "installment" && (
+                <div>
+                  <label
+                    htmlFor="installment-count"
+                    className="mb-2 block text-sm font-medium text-slate-700"
+                  >
+                    Quantidade de parcelas
+                  </label>
 
-            {successMessage && (
-              <div className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
-                {successMessage}
-              </div>
-            )}
+                  <input
+                    id="installment-count"
+                    type="number"
+                    min={2}
+                    max={120}
+                    value={form.installmentCount}
+                    onChange={(event) =>
+                      updateForm("installmentCount", event.target.value)
+                    }
+                    placeholder="Ex.: 6"
+                    className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
 
-            <button
-              type="submit"
-              disabled={
-                submitting ||
-                loadingReferences ||
-                users.length === 0 ||
-                cards.length === 0
-              }
-              className="w-full rounded-lg bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {submitting
-                ? editingCharge
-                  ? "Salvando alterações..."
-                  : "Gerando faturas..."
-                : editingCharge
-                  ? "Salvar alterações"
-                  : "Cadastrar conta"}
-            </button>
-
-            {!loadingReferences &&
-              (users.length === 0 || cards.length === 0) && (
-                <p className="text-center text-sm text-red-600">
-                  É necessário possuir pelo menos um usuário e um cartão ativos.
-                </p>
-              )}
-          </div>
-        </form>
-
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-slate-200 p-6 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h3 className="text-xl font-bold text-slate-900">
-                Contas cadastradas
-              </h3>
-
-              <p className="mt-1 text-sm text-slate-500">
-                {charges.length}{" "}
-                {charges.length === 1
-                  ? "conta encontrada"
-                  : "contas encontradas"}
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={loadCharges}
-              disabled={loadingCharges}
-              className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
-            >
-              Atualizar
-            </button>
-          </div>
-
-          {loadingCharges && (
-            <div className="p-10 text-center text-slate-500">
-              Carregando contas...
-            </div>
-          )}
-
-          {!loadingCharges && charges.length === 0 && (
-            <div className="p-10 text-center">
-              <h4 className="font-semibold text-slate-900">
-                Nenhuma conta cadastrada
-              </h4>
-
-              <p className="mt-2 text-sm text-slate-500">
-                Utilize o formulário para cadastrar o primeiro lançamento.
-              </p>
-            </div>
-          )}
-
-          {!loadingCharges && charges.length > 0 && (
-            <div className="divide-y divide-slate-200">
-              {charges.map((charge) => (
-                <article key={charge.id} className="p-5 sm:p-6">
-                  <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-                    <div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <h4 className="text-lg font-bold text-slate-900">
-                          {charge.name}
-                        </h4>
-
-                        <span
-                          className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
-                            charge.type,
-                          )}`}
-                        >
-                          {getTypeLabel(charge.type)}
-                        </span>
-
-                        {!charge.active && (
-                          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
-                            Inativa
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+                  {installmentPreview && (
+                    <div className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                      Aproximadamente{" "}
+                      <strong>
+                        {installmentPreview.installmentCount}x de{" "}
+                        {formatCurrencyFromCents(installmentPreview.baseAmount)}
+                      </strong>
+                      .
+                      {installmentPreview.remainder > 0 && (
                         <span>
-                          {charge.user?.name ?? "Usuário não encontrado"}
+                          {" "}
+                          As primeiras {installmentPreview.remainder} parcelas
+                          terão um centavo a mais.
                         </span>
-
-                        <span>
-                          {charge.card?.name ?? "Cartão não encontrado"}
-
-                          {charge.card?.last_four
-                            ? ` — final ${charge.card.last_four}`
-                            : ""}
-                        </span>
-                      </div>
-
-                      <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-500">
-                        <span>
-                          Início:{" "}
-                          {formatInvoiceMonth(charge.first_invoice_month)}
-                        </span>
-
-                        {charge.type === "installment" &&
-                          charge.installment_count && (
-                            <span>{charge.installment_count} parcelas</span>
-                          )}
-
-                        {charge.type === "fixed" &&
-                          charge.end_invoice_month && (
-                            <span>
-                              Término:{" "}
-                              {formatInvoiceMonth(charge.end_invoice_month)}
-                            </span>
-                          )}
-
-                        {charge.type === "fixed" &&
-                          !charge.end_invoice_month && (
-                            <span>Sem término definido</span>
-                          )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-4 lg:items-end">
-                      <div className="lg:text-right">
-                        <p className="text-sm text-slate-500">
-                          {charge.type === "installment"
-                            ? "Valor total"
-                            : charge.type === "fixed"
-                              ? "Valor mensal"
-                              : "Valor"}
-                        </p>
-
-                        <p className="mt-1 text-xl font-bold text-slate-900">
-                          {formatCurrencyFromCents(charge.amount_cents)}
-                        </p>
-                      </div>
-
-                      {charge.active && (
-                        <div className="flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={() => startEditing(charge)}
-                            disabled={removingChargeId === charge.id}
-                            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
-                          >
-                            Editar
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => removeCharge(charge)}
-                            disabled={removingChargeId === charge.id}
-                            className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {removingChargeId === charge.id
-                              ? "Removendo..."
-                              : "Remover"}
-                          </button>
-                        </div>
                       )}
                     </div>
-                  </div>
-                </article>
-              ))}
+                  )}
+                </div>
+              )}
+
+              <div>
+                <label
+                  htmlFor="first-invoice-month"
+                  className="mb-2 block text-sm font-medium text-slate-700"
+                >
+                  {form.type === "installment"
+                    ? "Primeira parcela"
+                    : "Primeira fatura"}
+                </label>
+
+                <input
+                  id="first-invoice-month"
+                  type="month"
+                  value={form.firstInvoiceMonth}
+                  onChange={(event) =>
+                    updateForm("firstInvoiceMonth", event.target.value)
+                  }
+                  className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                />
+              </div>
+
+              {form.type === "fixed" && (
+                <div>
+                  <label
+                    htmlFor="end-invoice-month"
+                    className="mb-2 block text-sm font-medium text-slate-700"
+                  >
+                    Última fatura
+                  </label>
+
+                  <input
+                    id="end-invoice-month"
+                    type="month"
+                    min={form.firstInvoiceMonth}
+                    value={form.endInvoiceMonth}
+                    onChange={(event) =>
+                      updateForm("endInvoiceMonth", event.target.value)
+                    }
+                    className="w-full rounded-lg border border-slate-300 px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"
+                  />
+
+                  <p className="mt-2 text-xs leading-5 text-slate-500">
+                    Deixe vazio quando a cobrança não possuir data definida para
+                    terminar.
+                  </p>
+                </div>
+              )}
+
+              {errorMessage && (
+                <div className="rounded-lg bg-red-50 p-3 text-sm text-red-700">
+                  {errorMessage}
+                </div>
+              )}
+
+              {successMessage && (
+                <div className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">
+                  {successMessage}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={
+                  submitting ||
+                  loadingReferences ||
+                  users.length === 0 ||
+                  cards.length === 0
+                }
+                className="w-full rounded-lg bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {submitting
+                  ? editingCharge
+                    ? "Salvando alterações..."
+                    : "Gerando faturas..."
+                  : editingCharge
+                    ? "Salvar alterações"
+                    : "Cadastrar conta"}
+              </button>
+
+              {!loadingReferences &&
+                (users.length === 0 || cards.length === 0) && (
+                  <p className="text-center text-sm text-red-600">
+                    É necessário possuir pelo menos um usuário e um cartão ativos.
+                  </p>
+                )}
             </div>
-          )}
+          </form>
+
+          <div className="min-w-0">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <h3 className="font-bold text-slate-900">
+                    Filtros
+                  </h3>
+
+                  <p className="mt-1 text-sm text-slate-500">
+                    Encontre uma conta específica.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={clearChargeFilters}
+                  disabled={!hasActiveFilters}
+                  className="text-sm font-semibold text-indigo-600 transition hover:text-indigo-700 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  Limpar filtros
+                </button>
+              </div>
+
+              <div className="mt-5 grid gap-4 md:grid-cols-2">
+                <div>
+                  <label
+                    htmlFor="charge-search"
+                    className="mb-2 block text-sm font-medium text-slate-600"
+                  >
+                    Buscar conta
+                  </label>
+
+                  <input
+                    id="charge-search"
+                    type="text"
+                    value={searchTerm}
+                    onChange={(event) => {
+                      setSearchTerm(
+                        event.target.value,
+                      );
+
+                      setCurrentPage(1);
+                    }}
+                    placeholder="Ex.: Netflix ou faculdade"
+                    className="w-full rounded-lg border border-slate-300 px-4 py-2.5 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                  />
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="charge-type-filter"
+                    className="mb-2 block text-sm font-medium text-slate-600"
+                  >
+                    Tipo
+                  </label>
+
+                  <select
+                    id="charge-type-filter"
+                    value={typeFilter}
+                    onChange={(event) => {
+                      setTypeFilter(
+                        event.target.value,
+                      );
+
+                      setCurrentPage(1);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                  >
+                    <option value="">
+                      Todos os tipos
+                    </option>
+
+                    <option value="variable">
+                      Variável
+                    </option>
+
+                    <option value="fixed">
+                      Fixa
+                    </option>
+
+                    <option value="installment">
+                      Parcelada
+                    </option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="charge-source-filter"
+                    className="mb-2 block text-sm font-medium text-slate-600"
+                  >
+                    Cartão / origem
+                  </label>
+
+                  <select
+                    id="charge-source-filter"
+                    value={sourceFilter}
+                    onChange={(event) => {
+                      setSourceFilter(
+                        event.target.value,
+                      );
+
+                      setCurrentPage(1);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                  >
+                    <option value="">
+                      Todos
+                    </option>
+
+                    {availableSources.map(
+                      (source) => (
+                        <option
+                          key={source.id}
+                          value={source.id}
+                        >
+                          {source.kind === "direct"
+                            ? "Fora do cartão"
+                            : source.name}
+                        </option>
+                      ),
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="charge-status-filter"
+                    className="mb-2 block text-sm font-medium text-slate-600"
+                  >
+                    Status
+                  </label>
+
+                  <select
+                    id="charge-status-filter"
+                    value={statusFilter}
+                    onChange={(event) => {
+                      setStatusFilter(
+                        event.target.value as
+                        | "all"
+                        | "active"
+                        | "inactive",
+                      );
+
+                      setCurrentPage(1);
+                    }}
+                    className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 outline-none transition focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                  >
+                    <option value="all">
+                      Todas
+                    </option>
+
+                    <option value="active">
+                      Ativas
+                    </option>
+
+                    <option value="inactive">
+                      Inativas
+                    </option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-5 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-4 border-b border-slate-200 p-6 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <h3 className="text-xl font-bold text-slate-900">
+                    Contas cadastradas
+                  </h3>
+
+                  <p className="mt-1 text-sm text-slate-500">
+                    {totalCharges}{" "}
+                    {totalCharges === 1
+                      ? "conta encontrada"
+                      : "contas encontradas"}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={loadCharges}
+                  disabled={loadingCharges}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                >
+                  Atualizar
+                </button>
+              </div>
+
+              {loadingCharges && (
+                <div className="p-10 text-center text-slate-500">
+                  Carregando contas...
+                </div>
+              )}
+
+              {!loadingCharges && charges.length === 0 && (
+                <div className="p-10 text-center">
+                  <h4 className="font-semibold text-slate-900">
+                    {hasActiveFilters
+                      ? "Nenhuma conta encontrada"
+                      : "Nenhuma conta cadastrada"}
+                  </h4>
+
+                  <p className="mt-2 text-sm text-slate-500">
+                    {hasActiveFilters
+                      ? "Nenhuma conta corresponde aos filtros selecionados."
+                      : "Utilize o formulário para cadastrar o primeiro lançamento."}
+                  </p>
+
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={clearChargeFilters}
+                      className="mt-4 text-sm font-semibold text-indigo-600 hover:text-indigo-700"
+                    >
+                      Limpar filtros
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {!loadingCharges && charges.length > 0 && (
+                <div className="divide-y divide-slate-200">
+                  {charges.map((charge) => (
+                    <article key={charge.id} className="p-5 sm:p-6">
+                      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h4 className="text-lg font-bold text-slate-900">
+                              {charge.name}
+                            </h4>
+
+                            <span
+                              className={`rounded-full px-3 py-1 text-xs font-medium ${getTypeBadgeClass(
+                                charge.type,
+                              )}`}
+                            >
+                              {getTypeLabel(charge.type)}
+                            </span>
+
+                            {!charge.active && (
+                              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-500">
+                                Inativa
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
+                            <span>
+                              {charge.user?.name ?? "Usuário não encontrado"}
+                            </span>
+
+                            <span>
+                              {charge.card?.name ?? "Cartão não encontrado"}
+
+                              {charge.card?.last_four
+                                ? ` — final ${charge.card.last_four}`
+                                : ""}
+                            </span>
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-500">
+                            <span>
+                              Início:{" "}
+                              {formatInvoiceMonth(charge.first_invoice_month)}
+                            </span>
+
+                            {charge.type === "installment" &&
+                              charge.installment_count && (
+                                <span>{charge.installment_count} parcelas</span>
+                              )}
+
+                            {charge.type === "fixed" &&
+                              charge.end_invoice_month && (
+                                <span>
+                                  Término:{" "}
+                                  {formatInvoiceMonth(charge.end_invoice_month)}
+                                </span>
+                              )}
+
+                            {charge.type === "fixed" &&
+                              !charge.end_invoice_month && (
+                                <span>Sem término definido</span>
+                              )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-4 lg:items-end">
+                          <div className="lg:text-right">
+                            <p className="text-sm text-slate-500">
+                              {charge.type === "installment"
+                                ? "Valor total"
+                                : charge.type === "fixed"
+                                  ? "Valor mensal"
+                                  : "Valor"}
+                            </p>
+
+                            <p className="mt-1 text-xl font-bold text-slate-900">
+                              {formatCurrencyFromCents(charge.amount_cents)}
+                            </p>
+                          </div>
+
+                          {charge.active && (
+                            <div className="flex flex-wrap gap-2">
+                              <button
+                                type="button"
+                                onClick={() => startEditing(charge)}
+                                disabled={removingChargeId === charge.id}
+                                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-50"
+                              >
+                                Editar
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => removeCharge(charge)}
+                                disabled={removingChargeId === charge.id}
+                                className="rounded-lg border border-red-200 px-4 py-2 text-sm font-medium text-red-600 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                {removingChargeId === charge.id
+                                  ? "Removendo..."
+                                  : "Remover"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              )}
+
+              {!loadingCharges && totalCharges > 0 && (
+                <div className="flex flex-col gap-4 border-t border-slate-200 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                  <p className="text-sm text-slate-500">
+                    Exibindo{" "}
+                    <strong className="font-semibold text-slate-700">
+                      {firstVisibleItem}
+                    </strong>
+                    {" – "}
+                    <strong className="font-semibold text-slate-700">
+                      {lastVisibleItem}
+                    </strong>{" "}
+                    de{" "}
+                    <strong className="font-semibold text-slate-700">
+                      {totalCharges}
+                    </strong>
+                  </p>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={currentPage === 1}
+                      onClick={() =>
+                        setCurrentPage(
+                          (page) =>
+                            Math.max(
+                              1,
+                              page - 1,
+                            ),
+                        )
+                      }
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Anterior
+                    </button>
+
+                    <span className="px-2 text-sm text-slate-500">
+                      Página{" "}
+                      <strong className="text-slate-800">
+                        {currentPage}
+                      </strong>{" "}
+                      de{" "}
+                      <strong className="text-slate-800">
+                        {totalPages}
+                      </strong>
+                    </span>
+
+                    <button
+                      type="button"
+                      disabled={
+                        currentPage >= totalPages
+                      }
+                      onClick={() =>
+                        setCurrentPage(
+                          (page) =>
+                            Math.min(
+                              totalPages,
+                              page + 1,
+                            ),
+                        )
+                      }
+                      className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-600 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Próxima
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
