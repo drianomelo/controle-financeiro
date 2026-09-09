@@ -22,10 +22,10 @@ function App() {
 
           <Route path="faturas/:year/:month" element={<InvoiceMonthPage />} />
 
+          <Route path="contas" element={<ChargesPage />} />
+
           <Route element={<ProtectedRoute adminOnly />}>
             <Route path="cartoes" element={<CardsPage />} />
-
-            <Route path="contas" element={<ChargesPage />} />
 
             <Route path="usuarios" element={<UsersPage />} />
 

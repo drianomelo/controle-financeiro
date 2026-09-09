@@ -73,14 +73,16 @@ export function AppLayout() {
                 Início
               </NavLink>
 
+              {profile && (
+                <NavLink to="/contas" className={getLinkClass}>
+                  {profile.role === "admin" ? "Contas" : "Minhas contas"}
+                </NavLink>
+              )}
+
               {profile?.role === "admin" && (
                 <>
                   <NavLink to="/cartoes" className={getLinkClass}>
                     Cartões
-                  </NavLink>
-
-                  <NavLink to="/contas" className={getLinkClass}>
-                    Contas
                   </NavLink>
 
                   <NavLink to="/receitas" className={getLinkClass}>

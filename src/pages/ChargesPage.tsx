@@ -12,6 +12,7 @@ import {
   moneyInputToCents,
 } from "../utils/currency";
 import { UserAvatar } from "../components/UserAvatar";
+import { useAuth } from "../contexts/AuthContext";
 
 type ChargeType = "variable" | "fixed" | "installment";
 
@@ -144,6 +145,10 @@ function getTypeBadgeClass(type: ChargeType) {
 }
 
 export function ChargesPage() {
+  const { profile } = useAuth();
+
+  const isAdmin = profile?.role === "admin";
+
   const [form, setForm] = useState<ChargeForm>(getEmptyForm);
 
   const [users, setUsers] = useState<UserOption[]>([]);
@@ -164,8 +169,11 @@ export function ChargesPage() {
 
   const [successMessage, setSuccessMessage] = useState("");
 
-  const [selectedUserId, setSelectedUserId] =
-    useState("");
+  const [selectedUserId, setSelectedUserId] = useState(
+    profile?.role === "common" ? profile.id : "",
+  );
+
+  const managedUserId = isAdmin ? selectedUserId : (profile?.id ?? "");
 
   const [searchTerm, setSearchTerm] =
     useState("");
@@ -187,55 +195,72 @@ export function ChargesPage() {
 
 
   const loadReferences = useCallback(async () => {
+    if (!profile) {
+      return;
+    }
+
     setLoadingReferences(true);
 
-    const [usersResult, cardsResult] = await Promise.all([
-      supabase
+    if (profile.role === "admin") {
+      const { data, error } = await supabase
         .from("profiles")
         .select("id, name, username, active, avatar_path")
         .eq("active", true)
         .order("name", {
           ascending: true,
-        }),
+        });
 
-      supabase
-        .from("cards")
-        .select(
-          `
-            id,
-            name,
-            last_four,
-            kind,
-            owner_user_id
-        `,
-        )
-        .eq("active", true)
-        .order("name", {
-          ascending: true,
-        }),
-    ]);
-
-    if (usersResult.error) {
-      console.error("Erro ao carregar usuários:", usersResult.error);
-
-      setErrorMessage("Não foi possível carregar os usuários.");
+      if (error) {
+        console.error("Erro ao carregar usuários:", error);
+        setErrorMessage("Não foi possível carregar os usuários.");
+        setUsers([]);
+      } else {
+        setUsers((data ?? []) as UserOption[]);
+      }
     } else {
-      setUsers((usersResult.data ?? []) as UserOption[]);
+      setUsers([
+        {
+          id: profile.id,
+          name: profile.name,
+          username: profile.username,
+          active: profile.active,
+          avatar_path: profile.avatar_path,
+        },
+      ]);
+
+      setSelectedUserId(profile.id);
     }
 
-    if (cardsResult.error) {
-      console.error("Erro ao carregar cartões:", cardsResult.error);
+    const { data: cardsData, error: cardsError } = await supabase
+      .from("cards")
+      .select(
+        `
+          id,
+          name,
+          last_four,
+          kind,
+          owner_user_id
+      `,
+      )
+      .eq("active", true)
+      .order("name", {
+        ascending: true,
+      });
+
+    if (cardsError) {
+      console.error("Erro ao carregar cartões:", cardsError);
 
       setErrorMessage("Não foi possível carregar os cartões.");
+      setCards([]);
     } else {
-      setCards((cardsResult.data ?? []) as CardOption[]);
+      setCards((cardsData ?? []) as CardOption[]);
     }
 
     setLoadingReferences(false);
-  }, []);
+  }, [profile]);
 
   const loadCharges = useCallback(async () => {
-    if (!selectedUserId) {
+    if (!managedUserId) {
       setCharges([]);
       setTotalCharges(0);
       setLoadingCharges(false);
@@ -283,7 +308,7 @@ export function ChargesPage() {
       )
       .eq(
         "user_id",
-        selectedUserId,
+        managedUserId,
       );
 
     /*
@@ -374,7 +399,7 @@ export function ChargesPage() {
   }, [
     currentPage,
     searchTerm,
-    selectedUserId,
+    managedUserId,
     sourceFilter,
     statusFilter,
     typeFilter,
@@ -403,13 +428,13 @@ export function ChargesPage() {
       cards.find(
         (card) =>
           card.kind === "direct" &&
-          card.owner_user_id === selectedUserId,
+          card.owner_user_id === managedUserId,
       ) ?? null,
-    [cards, selectedUserId],
+    [cards, managedUserId],
   );
 
   const availableSources = useMemo(() => {
-    if (!selectedUserId) {
+    if (!managedUserId) {
       return [];
     }
 
@@ -420,10 +445,10 @@ export function ChargesPage() {
 
       return (
         card.kind === "direct" &&
-        card.owner_user_id === selectedUserId
+        card.owner_user_id === managedUserId
       );
     });
-  }, [cards, selectedUserId]);
+  }, [cards, managedUserId]);
 
   const installmentPreview = useMemo(() => {
     if (form.type !== "installment" || !amountCents) {
@@ -477,6 +502,11 @@ export function ChargesPage() {
     setErrorMessage("");
     setSuccessMessage("");
 
+    if (!isAdmin && charge.user?.id !== profile?.id) {
+      setErrorMessage("Você só pode editar suas próprias contas.");
+      return;
+    }
+
     setEditingCharge(charge);
 
     setForm({
@@ -510,8 +540,10 @@ export function ChargesPage() {
       return "Informe o nome da conta.";
     }
 
-    if (!selectedUserId) {
-      return "Selecione um familiar.";
+    if (!managedUserId) {
+      return isAdmin
+        ? "Selecione um familiar."
+        : "Não foi possível identificar seu usuário.";
     }
 
     if (!form.cardId) {
@@ -556,6 +588,10 @@ export function ChargesPage() {
   }
 
   function selectUser(userId: string) {
+    if (!isAdmin) {
+      return;
+    }
+
     if (userId === selectedUserId) {
       return;
     }
@@ -614,7 +650,7 @@ export function ChargesPage() {
         }
         : {}),
       p_name: form.name.trim(),
-      p_user_id: selectedUserId,
+      p_user_id: managedUserId,
       p_card_id: form.cardId,
       p_type: form.type,
       p_amount_cents: amountCents,
@@ -661,6 +697,11 @@ export function ChargesPage() {
   async function removeCharge(charge: Charge) {
     setErrorMessage("");
     setSuccessMessage("");
+
+    if (!isAdmin && charge.user?.id !== profile?.id) {
+      setErrorMessage("Você só pode remover suas próprias contas.");
+      return;
+    }
 
     const confirmed = window.confirm(
       `Deseja remover a conta "${charge.name}"?\n\n` +
@@ -713,9 +754,9 @@ export function ChargesPage() {
     () =>
       users.find(
         (user) =>
-          user.id === selectedUserId,
+          user.id === managedUserId,
       ) ?? null,
-    [users, selectedUserId],
+    [managedUserId, users],
   );
 
   const totalPages = Math.max(
@@ -756,36 +797,44 @@ export function ChargesPage() {
   return (
     <section>
       <div>
-        <p className="text-sm font-medium text-blue-600">Administração</p>
+        <p className="text-sm font-medium text-blue-600">
+          {isAdmin ? "Administração" : "Organização financeira"}
+        </p>
 
-        <h2 className="mt-1 text-3xl font-bold text-slate-900">Contas</h2>
+        <h2 className="mt-1 text-3xl font-bold text-slate-900">
+          {isAdmin ? "Contas" : "Minhas contas"}
+        </h2>
 
         <p className="mt-2 text-slate-600">
-          Escolha um familiar para gerenciar suas contas.
+          {isAdmin
+            ? "Escolha um familiar para gerenciar suas contas."
+            : "Cadastre e acompanhe suas contas, compras e parcelamentos."}
         </p>
       </div>
 
-      <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        {users.map((user) => {
-          const selected =
-            selectedUserId === user.id;
+      {isAdmin && (
+        <div className="mt-7 grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          {users.map((user) => {
+            const selected = selectedUserId === user.id;
 
-          return (
-            <div
-              key={user.id}
-              onClick={() => selectUser(user.id)}
-              className={`cursor-pointer rounded-lg border px-4 py-3 transition-colors ${selected
-                ? "border-blue-500 bg-blue-100 text-blue-700"
-                : "border-slate-300 hover:bg-slate-100"
-                }`}
-            >
-              <p className="font-medium">{user.name}</p>
-            </div>
-          );
-        })}
-      </div>
+            return (
+              <button
+                type="button"
+                key={user.id}
+                onClick={() => selectUser(user.id)}
+                className={`cursor-pointer rounded-lg border px-4 py-3 text-left transition-colors ${selected
+                  ? "border-blue-500 bg-blue-100 text-blue-700"
+                  : "border-slate-300 hover:bg-slate-100"
+                  }`}
+              >
+                <span className="font-medium">{user.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
-      {!selectedUserId && !loadingReferences && (
+      {isAdmin && !managedUserId && !loadingReferences && (
         <div className="mt-8 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-12 text-center">
           <h3 className="font-bold text-slate-800">
             Selecione um familiar
@@ -798,7 +847,7 @@ export function ChargesPage() {
         </div>
       )}
 
-      {selectedUserId && (
+      {managedUserId && (
         <div className="mt-8 grid items-start gap-6 xl:grid-cols-[420px_1fr]">
           <form
             onSubmit={handleSubmit}
@@ -840,9 +889,13 @@ export function ChargesPage() {
 
                 <div>
                   <p className="text-xs font-medium text-indigo-500">
-                    {editingCharge
-                      ? "Editando conta de"
-                      : "Cadastrando conta para"}
+                    {isAdmin
+                      ? editingCharge
+                        ? "Editando conta de"
+                        : "Cadastrando conta para"
+                      : editingCharge
+                        ? "Editando sua conta"
+                        : "Cadastrando para você"}
                   </p>
 
                   <p className="font-bold text-indigo-950">
@@ -883,12 +936,12 @@ export function ChargesPage() {
                 <select
                   id="charge-card"
                   value={form.cardId}
-                  disabled={loadingReferences || !selectedUserId}
+                  disabled={loadingReferences || !managedUserId}
                   onChange={(event) => updateForm("cardId", event.target.value)}
                   className="w-full rounded-lg border border-slate-300 bg-white px-4 py-3 outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100"
                 >
                   <option value="">
-                    {selectedUserId
+                    {managedUserId
                       ? "Selecione uma forma de cobrança"
                       : "Selecione primeiro um usuário"}
                   </option>
@@ -913,7 +966,7 @@ export function ChargesPage() {
                   )}
                 </select>
 
-                {selectedUserId && (
+                {managedUserId && (
                   <p className="mt-2 text-xs leading-5 text-slate-500">
                     Use “Fora do cartão” para aluguel, faculdade, conta de
                     telefone e outras cobranças diretas.
@@ -1103,8 +1156,8 @@ export function ChargesPage() {
                 disabled={
                   submitting ||
                   loadingReferences ||
-                  users.length === 0 ||
-                  cards.length === 0
+                  !managedUserId ||
+                  availableSources.length === 0
                 }
                 className="w-full rounded-lg bg-blue-600 px-5 py-3 font-medium text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
               >
@@ -1118,9 +1171,11 @@ export function ChargesPage() {
               </button>
 
               {!loadingReferences &&
-                (users.length === 0 || cards.length === 0) && (
+                (!managedUserId || availableSources.length === 0) && (
                   <p className="text-center text-sm text-red-600">
-                    É necessário possuir pelo menos um usuário e um cartão ativos.
+                    {isAdmin && !managedUserId
+                      ? "Selecione um familiar para continuar."
+                      : "Nenhuma forma de cobrança está disponível para este usuário."}
                   </p>
                 )}
             </div>
@@ -1374,9 +1429,11 @@ export function ChargesPage() {
                           </div>
 
                           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-600">
-                            <span>
-                              {charge.user?.name ?? "Usuário não encontrado"}
-                            </span>
+                            {isAdmin && (
+                              <span>
+                                {charge.user?.name ?? "Usuário não encontrado"}
+                              </span>
+                            )}
 
                             <span>
                               {charge.card?.name ?? "Cartão não encontrado"}
